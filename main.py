@@ -42,6 +42,7 @@ def recursive_hardlink(src, dst):
 def main():
     if len(sys.argv) != 3:
         print('Usage: %s SRC DST' % sys.argv[0])
+        return 1
 
     hardlink_dir(sys.argv[1], sys.argv[2])
 
