@@ -26,18 +26,15 @@ def hardlink_dir(src_dir, dst_dir):
         with os.scandir(src) as it:
             for ent in it:
                 ent_dst_path = os.path.join(dst, ent.name)
-                if ent.is_symlink():
-                    symlink_target = os.readlink(ent.path)
-                    logging.debug(f"Symlink to {symlink_target}: {ent.path} -> {ent_dst_path}")
-                    os.symlink(symlink_target, ent_dst_path)
-                    continue
                 if ent.is_dir(follow_symlinks=False):
                     recursive_hardlink(ent.path, ent_dst_path)
                     continue
-                if ent.is_file(follow_symlinks=False):
+                if ent.is_file(follow_symlinks=False) or ent.is_symlink():
                     logging.debug(f"Hardlink file: {ent.path} -> {ent_dst_path}")
-                    os.link(ent.path, ent_dst_path)
+                    os.link(ent.path, ent_dst_path, follow_symlinks=False)
                     continue
+                # something that is not a file, symlink or directory
+                raise NotImplementedError(f"{ent.path}")
 
     if not os.path.isdir(src_abs):
         logging.error(f"Error reading source directory: {src_dir}")
