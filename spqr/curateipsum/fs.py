@@ -3,6 +3,8 @@ import os
 import subprocess
 from typing import Iterable
 
+_lg = logging.getLogger(__name__)
+
 
 def rsync_ext(src, dst, dry_run=False):
     """Call external rsync command"""
@@ -40,7 +42,7 @@ def rsync(src_dir, dst_dir=None):
     :return: nothing
     """
 
-    logging.info(f"Rsync: {src_dir} -> {dst_dir}")
+    _lg.info(f"Rsync: {src_dir} -> {dst_dir}")
     src_abs = os.path.abspath(src_dir)
     dst_abs = os.path.abspath(dst_dir)
 
@@ -67,7 +69,7 @@ def rsync(src_dir, dst_dir=None):
             do_update = True
 
         if do_update:
-            logging.info("Updating %s", src_entry)
+            _lg.info("Updating %s", src_entry)
 
 
 def hardlink_dir(src_dir, dst_dir):
@@ -77,12 +79,12 @@ def hardlink_dir(src_dir, dst_dir):
     :param dst_dir: path to target directory
     :return: None
     """
-    logging.info(f"Recursive hardlinking: {src_dir} -> {dst_dir}")
+    _lg.info(f"Recursive hardlinking: {src_dir} -> {dst_dir}")
     src_abs = os.path.abspath(src_dir)
     dst_abs = os.path.abspath(dst_dir)
 
     def recursive_hardlink(src, dst):
-        logging.debug(f"Creating directory: {src} -> {dst}")
+        _lg.debug(f"Creating directory: {src} -> {dst}")
         os.mkdir(dst)
 
         with os.scandir(src) as it:
@@ -93,18 +95,18 @@ def hardlink_dir(src_dir, dst_dir):
                     recursive_hardlink(ent.path, ent_dst_path)
                     continue
                 if ent.is_file(follow_symlinks=False) or ent.is_symlink():
-                    logging.debug(f"Hardlink file: {ent.path} -> {ent_dst_path}")
+                    _lg.debug(f"Hardlink file: {ent.path} -> {ent_dst_path}")
                     os.link(ent.path, ent_dst_path, follow_symlinks=False)
                     continue
                 # something that is not a file, symlink or directory
                 raise NotImplementedError(ent.path)
 
     if not os.path.isdir(src_abs):
-        logging.error(f"Error reading source directory: {src_dir}")
+        _lg.error(f"Error reading source directory: {src_dir}")
         raise RuntimeError(f"Error reading source directory: {src_dir}")
 
     if os.path.exists(dst_abs):
-        logging.error(f"Destination already exists: {dst_dir}")
+        _lg.error(f"Destination already exists: {dst_dir}")
         raise RuntimeError(f"Destination already exists: {dst_dir}")
 
     recursive_hardlink(src_abs, dst_abs)

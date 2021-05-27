@@ -2,10 +2,11 @@
 
 import argparse
 import logging
+import os.path
 import pathlib
 import sys
 
-import fs
+_lg = logging.getLogger('spqr.curateipsum')
 
 
 def main():
@@ -30,7 +31,10 @@ def main():
     loglevel = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=loglevel, handlers=[console_handler])
 
-    logging.info(args.src_dirs)
+    backup_dir_abs = os.path.abspath(args.backup_dir)
+    if not os.path.isdir(backup_dir_abs):
+        _lg.error("Backup directory %s does not exist, exiting", args.backup_dir)
+        return 1
 
     # fs.hardlink_dir(sys.argv[1], sys.argv[2])
     # fs.rsync(sys.argv[1], sys.argv[2])
