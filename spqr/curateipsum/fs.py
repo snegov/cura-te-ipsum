@@ -61,10 +61,14 @@ def rsync(src_dir, dst_dir=None):
         os.mkdir(dst_abs)
 
     for src_entry in scantree(src_abs):
-        rel_path = src_entry.path.removeprefix(src_abs + "/")
+        rel_path = src_entry.path[len(src_abs)+1:]
         dst_path = os.path.join(dst_abs, rel_path)
-        src_stat = os.lstat(src_entry.path)
+        src_stat = src_entry.stat(follow_symlinks=False)
+
         dst_stat = os.lstat(dst_path)
+
+        if src_entry.is_dir(follow_symlinks=False):
+            pass
 
         do_update = False
         # check file size
