@@ -1,5 +1,10 @@
+"""
+Module with filesystem-related functions.
+"""
+
 import logging
 import os
+import pathlib
 import subprocess
 from typing import Iterable
 
@@ -29,6 +34,7 @@ def scantree(path) -> Iterable[os.DirEntry]:
     entry: os.DirEntry
     for entry in os.scandir(path):
         if entry.is_dir(follow_symlinks=False):
+            yield entry
             yield from scantree(entry.path)
         else:
             yield entry
@@ -84,14 +90,18 @@ def hardlink_dir(src_dir, dst_dir):
     dst_abs = os.path.abspath(dst_dir)
 
     def recursive_hardlink(src, dst):
-        _lg.debug(f"Creating directory: {src} -> {dst}")
-        os.mkdir(dst)
-
         with os.scandir(src) as it:
             ent: os.DirEntry
             for ent in it:
                 ent_dst_path = os.path.join(dst, ent.name)
                 if ent.is_dir(follow_symlinks=False):
+                    _lg.debug(f"Copying directory: {ent.path} -> {ent_dst_path}")
+                    os.mkdir(ent_dst_path)
+                    ent_stat = ent.stat(follow_symlinks=False)
+                    os.chown(ent_dst_path, ent_stat.st_uid, ent_stat.st_gid)
+                    os.chmod(ent_dst_path, ent_stat.st_mode)
+
+                    # process directory children
                     recursive_hardlink(ent.path, ent_dst_path)
                     continue
                 if ent.is_file(follow_symlinks=False) or ent.is_symlink():
@@ -109,5 +119,7 @@ def hardlink_dir(src_dir, dst_dir):
         _lg.error(f"Destination already exists: {dst_dir}")
         raise RuntimeError(f"Destination already exists: {dst_dir}")
 
+    _lg.debug(f"Creating directory: {dst_abs}")
+    os.mkdir(dst_abs)
     recursive_hardlink(src_abs, dst_abs)
     return
