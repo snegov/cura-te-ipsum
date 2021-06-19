@@ -69,4 +69,11 @@ def initiate_backup(sources, backup_dir: pathlib.Path):
             latest_backup.name,
             cur_backup.name,
         )
+
         hardlink_dir(latest_backup, cur_backup)
+
+    # for src in sources:
+    #     src_abs = pathlib.Path(os.path.abspath(src))
+    #     dst_abs = pathlib.Path(os.path.join(cur_backup, src_abs.name))
+    #     _lg.info("Backing up directory %s to %s backup", src_abs, cur_backup.name)
+    #     rsync(src_abs, cur_backup)
