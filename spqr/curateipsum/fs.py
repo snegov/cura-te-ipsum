@@ -3,9 +3,12 @@ Module with filesystem-related functions.
 """
 
 import enum
+import glob
 import logging
 import os
+import shutil
 import subprocess
+import sys
 from typing import Iterable
 
 _lg = logging.getLogger(__name__)
@@ -213,8 +216,19 @@ def _hardlink_dir_ext(src, dst):
     :param dst: absolute path to target directory.
     :return: None
     """
-    res = subprocess.run(["cp", "-v", "-a", "-l", f"{src}/*", dst])
-    return res
+    if sys.platform == "darwin":
+        cp = "gcp"
+    else:
+        cp = "cp"
+    src_content = glob.glob(f"{src}/*")
+    cmd = [cp, "--archive", "--verbose", "--link", *src_content, dst]
+    _lg.debug("Executing external command: %s", " ".join(cmd))
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    with process.stdout:
+        for line in iter(process.stdout.readline, b""):
+            logging.debug("%s: %s", cp, line.decode("utf-8").strip())
+    exitcode = process.wait()
+    return exitcode
 
 
 def _recursive_hardlink(src, dst):
@@ -269,5 +283,8 @@ def hardlink_dir(src_dir, dst_dir):
 
     _lg.debug(f"Creating directory: {dst_abs}")
     os.mkdir(dst_abs)
-    _recursive_hardlink(src_abs, dst_abs)
+    res = _hardlink_dir_ext(src_abs, dst_abs)
+    if res:
+        _lg.error("Something went wrong during hardlink_dir, removing created dest dir: %s", dst_abs)
+        shutil.rmtree(dst_abs, ignore_errors=True)
     return
