@@ -235,6 +235,7 @@ def _recursive_hardlink(src, dst):
                 ent_stat = ent.stat(follow_symlinks=False)
                 os.chown(ent_dst_path, ent_stat.st_uid, ent_stat.st_gid)
                 os.chmod(ent_dst_path, ent_stat.st_mode)
+                os.utime(ent_dst_path, (ent_stat.st_atime, ent_stat.st_mtime))
 
                 # process directory children
                 _recursive_hardlink(ent.path, ent_dst_path)
