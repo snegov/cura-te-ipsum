@@ -30,17 +30,14 @@ def _get_latest_backup(backup_dir: pathlib.Path) -> Optional[pathlib.Path]:
     backups = sorted(os.listdir(backup_dir), reverse=True)
 
     for b_ent in backups:
-        b_ent_abs = pathlib.Path(os.path.join(backup_dir, b_ent))
-
+        b_ent_abs = backup_dir / b_ent
         if not _is_backup_entity(b_ent_abs):
             continue
-
         if not os.listdir(b_ent_abs):
             _lg.info("Removing empty backup entity: %s", b_ent_abs.name)
             _lg.debug("Removing directory %s", b_ent_abs)
             os.rmdir(b_ent_abs)
             continue
-
         return b_ent_abs
 
     return None
@@ -56,21 +53,16 @@ def initiate_backup(sources, backup_dir: pathlib.Path, dry_run=False):
 
     latest_backup = _get_latest_backup(backup_dir)
     if cur_backup == latest_backup:
-        _lg.warning(
-            "Latest backup %s was created less than minute ago, exiting",
-            latest_backup.name,
-        )
+        _lg.warning("Latest backup %s was created less than minute ago, exiting",
+                    latest_backup.name)
         return
 
     if latest_backup is None:
         _lg.info("Creating empty directory for current backup: %s", cur_backup.name)
         os.mkdir(cur_backup)
     else:
-        _lg.info(
-            "Copying data from latest backup %s to current backup %s",
-            latest_backup.name,
-            cur_backup.name,
-        )
+        _lg.info("Copying data from latest backup %s to current backup %s",
+                 latest_backup.name, cur_backup.name)
 
         hl_res = fs.hardlink_dir(latest_backup, cur_backup)
         if not hl_res:

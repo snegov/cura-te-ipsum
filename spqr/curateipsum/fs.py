@@ -6,7 +6,6 @@ import enum
 import glob
 import logging
 import os
-import shutil
 import subprocess
 import sys
 from typing import Iterable
@@ -18,16 +17,18 @@ def rsync_ext(src, dst, dry_run=False):
     """Call external rsync command"""
     rsync_args = ["rsync"]
     if dry_run:
-        rsync_args.append("-n")
-    rsync_args.append("-a")  # archive
-    rsync_args.append("-z")  # compress
-    rsync_args.append("-h")  # human-readable
-    rsync_args.append("-v")  # verbose
-    rsync_args.append("-u")  # don't touch new files on receiver
-    rsync_args.append("--progress")
-    rsync_args.append("--del")  # delete during
-    rsync_args.append(src)
-    rsync_args.append(dst)
+        rsync_args.append("--dry-run")
+    rsync_args.append("--archive")
+    # rsync_args.append("--compress")
+    # rsync_args.append("--inplace")
+    rsync_args.append("--whole-file")
+    rsync_args.append("--human-readable")
+    rsync_args.append("--delete-during")
+    rsync_args.append("--itemize-changes")
+    rsync_args.append(f"{src}/")
+    rsync_args.append(str(dst))
+
+    _lg.info("Executing external command: %s", " ".join(rsync_args))
     res = subprocess.run(rsync_args)
     return res
 
@@ -144,7 +145,7 @@ def rsync(src_dir, dst_dir, dry_run=False):
 
         # remove dst entries not existing in source
         if src_entry is None:
-            _lg.debug("deleting %s", rel_path)
+            _lg.info("deleting %s", rel_path)
             rm_direntry(dst_entry)
             continue
 
@@ -203,6 +204,7 @@ def rsync(src_dir, dst_dir, dry_run=False):
             _lg.info("updating owners %s", rel_path)
             os.chown(dst_entry.path, src_stat.st_uid, src_stat.st_gid)
 
+    # process remained source entries
     for rel_path, src_entry in src_files_map.items():
         dst_path = os.path.join(dst_root_abs, rel_path)
         _lg.info("creating %s", rel_path)
