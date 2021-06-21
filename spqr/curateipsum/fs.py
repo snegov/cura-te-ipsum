@@ -111,7 +111,7 @@ class Actions(enum.Enum):
     create = enum.auto()
 
 
-def rsync(src_dir, dst_dir=None):
+def rsync(src_dir, dst_dir, dry_run=False):
     """
     Do sync
     :param src_dir: source dir

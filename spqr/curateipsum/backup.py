@@ -5,6 +5,7 @@ Module with backup functions.
 import logging
 import os
 import pathlib
+import shutil
 from datetime import datetime
 from typing import Optional
 
@@ -44,7 +45,7 @@ def _get_latest_backup(backup_dir: pathlib.Path) -> Optional[pathlib.Path]:
     return None
 
 
-def initiate_backup(sources, backup_dir: pathlib.Path):
+def initiate_backup(sources, backup_dir: pathlib.Path, dry_run=False):
     """ Main backup function """
 
     cur_backup = pathlib.Path(
@@ -77,3 +78,8 @@ def initiate_backup(sources, backup_dir: pathlib.Path):
     #     dst_abs = pathlib.Path(os.path.join(cur_backup, src_abs.name))
     #     _lg.info("Backing up directory %s to %s backup", src_abs, cur_backup.name)
     #     rsync(src_abs, cur_backup)
+    if dry_run:
+        _lg.info("Dry-run, removing created backup: %s", cur_backup.name)
+        shutil.rmtree(cur_backup, ignore_errors=True)
+    else:
+        _lg.info("Backup created: %s", cur_backup.name)
