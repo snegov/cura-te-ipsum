@@ -9,7 +9,7 @@ import shutil
 from datetime import datetime
 from typing import Optional
 
-from spqr.curateipsum.fs import hardlink_dir, rsync
+import spqr.curateipsum.fs as fs
 
 BACKUP_ENT_FMT = "%y%m%d_%H%M"
 _lg = logging.getLogger(__name__)
@@ -71,13 +71,12 @@ def initiate_backup(sources, backup_dir: pathlib.Path, dry_run=False):
             cur_backup.name,
         )
 
-        hardlink_dir(latest_backup, cur_backup)
-
-    # for src in sources:
-    #     src_abs = pathlib.Path(os.path.abspath(src))
-    #     dst_abs = pathlib.Path(os.path.join(cur_backup, src_abs.name))
-    #     _lg.info("Backing up directory %s to %s backup", src_abs, cur_backup.name)
-    #     rsync(src_abs, cur_backup)
+        hl_res = fs.hardlink_dir(latest_backup, cur_backup)
+        if not hl_res:
+            _lg.error("Something went wrong during copying data from latest backup,"
+                      " removing created %s", cur_backup.name)
+            shutil.rmtree(cur_backup, ignore_errors=True)
+            return
     if dry_run:
         _lg.info("Dry-run, removing created backup: %s", cur_backup.name)
         shutil.rmtree(cur_backup, ignore_errors=True)

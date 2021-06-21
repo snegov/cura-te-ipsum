@@ -209,7 +209,7 @@ def rsync(src_dir, dst_dir, dry_run=False):
         copy_direntry(src_entry, dst_path)
 
 
-def _hardlink_dir_ext(src, dst):
+def _hardlink_dir_ext(src, dst) -> bool:
     """
     Make hardlink for a directory using cp -al. Both src and dst should exist.
     :param src: absolute path to source directory.
@@ -222,16 +222,16 @@ def _hardlink_dir_ext(src, dst):
         cp = "cp"
     src_content = glob.glob(f"{src}/*")
     cmd = [cp, "--archive", "--verbose", "--link", *src_content, dst]
-    _lg.debug("Executing external command: %s", " ".join(cmd))
+    _lg.info("Executing external command: %s", " ".join(cmd))
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     with process.stdout:
         for line in iter(process.stdout.readline, b""):
             logging.debug("%s: %s", cp, line.decode("utf-8").strip())
     exitcode = process.wait()
-    return exitcode
+    return not bool(exitcode)
 
 
-def _recursive_hardlink(src, dst):
+def _recursive_hardlink(src, dst) -> bool:
     """
     Do hardlink directory recursively using python only.
     Both src and dst directories should exist.
@@ -261,13 +261,15 @@ def _recursive_hardlink(src, dst):
             # something that is not a file, symlink or directory
             raise NotImplementedError(ent.path)
 
+    return True
 
-def hardlink_dir(src_dir, dst_dir):
+
+def hardlink_dir(src_dir, dst_dir) -> bool:
     """
     Make hardlink for a directory with all its content.
     :param src_dir: path to source directory
     :param dst_dir: path to target directory
-    :return: None
+    :return: boolean result
     """
     _lg.info(f"Recursive hardlinking: {src_dir} -> {dst_dir}")
     src_abs = os.path.abspath(src_dir)
@@ -283,8 +285,5 @@ def hardlink_dir(src_dir, dst_dir):
 
     _lg.debug(f"Creating directory: {dst_abs}")
     os.mkdir(dst_abs)
-    res = _hardlink_dir_ext(src_abs, dst_abs)
-    if res:
-        _lg.error("Something went wrong during hardlink_dir, removing created dest dir: %s", dst_abs)
-        shutil.rmtree(dst_abs, ignore_errors=True)
-    return
+
+    return _hardlink_dir_ext(src_abs, dst_abs)
