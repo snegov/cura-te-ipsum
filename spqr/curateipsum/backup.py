@@ -6,6 +6,7 @@ import logging
 import os
 import pathlib
 import shutil
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -48,9 +49,9 @@ def _get_latest_backup(backup_dir: pathlib.Path) -> Optional[pathlib.Path]:
 def initiate_backup(sources, backup_dir: pathlib.Path, dry_run=False):
     """ Main backup function """
 
-    cur_backup = pathlib.Path(
-        os.path.join(backup_dir, datetime.now().strftime(BACKUP_ENT_FMT))
-    )
+    start_time = time.time()
+    start_time_fmt = datetime.fromtimestamp(start_time).strftime(BACKUP_ENT_FMT)
+    cur_backup = backup_dir / start_time_fmt
     _lg.debug("Current backup dir: %s", cur_backup)
 
     latest_backup = _get_latest_backup(backup_dir)
@@ -82,3 +83,7 @@ def initiate_backup(sources, backup_dir: pathlib.Path, dry_run=False):
         shutil.rmtree(cur_backup, ignore_errors=True)
     else:
         _lg.info("Backup created: %s", cur_backup.name)
+
+    end_time = time.time()
+    spend_time = end_time - start_time
+    _lg.info("Finished, time spent: %.3fs", spend_time)
