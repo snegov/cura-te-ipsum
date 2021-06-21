@@ -78,6 +78,13 @@ def initiate_backup(sources, backup_dir: pathlib.Path, dry_run=False):
                       " removing created %s", cur_backup.name)
             shutil.rmtree(cur_backup, ignore_errors=True)
             return
+
+    for src in sources:
+        src_abs = pathlib.Path(os.path.abspath(src))
+        dst_abs = cur_backup / src_abs.name
+        _lg.info("Backing up directory %s to %s backup", src_abs, cur_backup.name)
+        fs.rsync_ext(src_abs, dst_abs, dry_run=dry_run)
+
     if dry_run:
         _lg.info("Dry-run, removing created backup: %s", cur_backup.name)
         shutil.rmtree(cur_backup, ignore_errors=True)
