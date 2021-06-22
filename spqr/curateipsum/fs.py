@@ -248,13 +248,16 @@ def _recursive_hardlink(src, dst) -> bool:
             if ent.is_dir(follow_symlinks=False):
                 _lg.debug(f"Copying directory: {ent.path} -> {ent_dst_path}")
                 os.mkdir(ent_dst_path)
+
+                # process directory children
+                _recursive_hardlink(ent.path, ent_dst_path)
+
+                # save directory's metainfo
                 ent_stat = ent.stat(follow_symlinks=False)
                 os.chown(ent_dst_path, ent_stat.st_uid, ent_stat.st_gid)
                 os.chmod(ent_dst_path, ent_stat.st_mode)
                 os.utime(ent_dst_path, (ent_stat.st_atime, ent_stat.st_mtime))
 
-                # process directory children
-                _recursive_hardlink(ent.path, ent_dst_path)
                 continue
             if ent.is_file(follow_symlinks=False) or ent.is_symlink():
                 _lg.debug(f"Hardlink file: {ent.path} -> {ent_dst_path}")
