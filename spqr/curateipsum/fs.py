@@ -210,6 +210,23 @@ def rsync(src_dir, dst_dir, dry_run=False):
         _lg.info("creating %s", rel_path)
         copy_direntry(src_entry, dst_path)
 
+    # restore dir mtimes in dst, updated by updating files
+    for src_entry in scantree(src_root_abs, dir_first=True):
+        if not src_entry.is_dir():
+            continue
+        rel_path = src_entry.path[len(src_root_abs) + 1 :]
+        dst_path = os.path.join(dst_root_abs, rel_path)
+        src_stat = src_entry.stat(follow_symlinks=False)
+        os.utime(dst_path,
+                 (src_stat.st_atime, src_stat.st_mtime),
+                 follow_symlinks=False)
+
+    # restore dst_root dir mtime
+    src_root_stat = os.lstat(src_root_abs)
+    os.utime(dst_root_abs,
+             (src_root_stat.st_atime, src_root_stat.st_mtime),
+             follow_symlinks=False)
+
 
 def _hardlink_dir_ext(src, dst) -> bool:
     """
