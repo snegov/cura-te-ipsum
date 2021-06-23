@@ -13,6 +13,20 @@ from typing import Iterable
 _lg = logging.getLogger(__name__)
 
 
+
+# *deleting will_be_deleted
+# >f.st.... .gitignore
+# >f+++++++ LICENSE
+# >f+++++++ LICENSE-sym
+# >f+++++++ README.md
+# >f+++++++ find_stale_torrents.py
+# >f+++++++ rootfile
+# cL+++++++ test -> rootfile
+# cd+++++++ folder/
+# >f+++++++ folder/in-folder
+# cd+++++++ java-alg/
+
+
 def rsync_ext(src, dst, dry_run=False):
     """Call external rsync command"""
     rsync_args = ["rsync"]
@@ -308,4 +322,4 @@ def hardlink_dir(src_dir, dst_dir) -> bool:
     _lg.debug(f"Creating directory: {dst_abs}")
     os.mkdir(dst_abs)
 
-    return _hardlink_dir_ext(src_abs, dst_abs)
+    return _recursive_hardlink(src_abs, dst_abs)

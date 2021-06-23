@@ -43,7 +43,10 @@ def _get_latest_backup(backup_dir: pathlib.Path) -> Optional[pathlib.Path]:
     return None
 
 
-def initiate_backup(sources, backup_dir: pathlib.Path, dry_run=False):
+def initiate_backup(sources,
+                    backup_dir: pathlib.Path,
+                    dry_run: bool = False,
+                    external_rsync: bool = False):
     """ Main backup function """
 
     start_time = time.time()
@@ -71,11 +74,13 @@ def initiate_backup(sources, backup_dir: pathlib.Path, dry_run=False):
             shutil.rmtree(cur_backup, ignore_errors=True)
             return
 
+    rsync_func = fs.rsync_ext if external_rsync else fs.rsync
+
     for src in sources:
         src_abs = pathlib.Path(os.path.abspath(src))
         dst_abs = cur_backup / src_abs.name
         _lg.info("Backing up directory %s to %s backup", src_abs, cur_backup.name)
-        fs.rsync_ext(src_abs, dst_abs, dry_run=dry_run)
+        rsync_func(src_abs, dst_abs, dry_run=dry_run)
 
     if dry_run:
         _lg.info("Dry-run, removing created backup: %s", cur_backup.name)

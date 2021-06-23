@@ -34,6 +34,10 @@ def main():
                         action="store_true",
                         default=False,
                         help="Do not do create backup")
+    parser.add_argument("--external-rsync",
+                        action="store_true",
+                        default=False,
+                        help="Use external rsync for copying")
     parser.add_argument("sources",
                         nargs="+",
                         metavar="SOURCE",
@@ -55,7 +59,12 @@ def main():
             _lg.error("Source directory %s does not exist", src_dir)
             return 1
 
-    initiate_backup(args.sources, backup_dir_abs, dry_run=args.dry_run)
+    initiate_backup(
+        args.sources,
+        backup_dir_abs,
+        dry_run=args.dry_run,
+        external_rsync=args.external_rsync,
+    )
 
 
 if __name__ == "__main__":
