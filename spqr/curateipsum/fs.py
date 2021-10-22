@@ -13,7 +13,6 @@ from typing import Iterable
 _lg = logging.getLogger(__name__)
 
 
-
 # *deleting will_be_deleted
 # >f.st.... .gitignore
 # >f+++++++ LICENSE
@@ -99,6 +98,7 @@ def copy_file(src, dst):
         try: os.close(fin)
         except: pass
 
+
 def copy_direntry(entry: os.DirEntry, dst_path):
     """ Non-recursive DirEntry (file, dir or symlink) copy. """
     if entry.is_dir():
@@ -158,12 +158,12 @@ def rsync(src_dir, dst_dir, dry_run=False):
 
     # {rel_path: dir_entry} map
     src_files_map = {
-        ent.path[len(src_root_abs) + 1 :]: ent for ent in scantree(src_root_abs)
+        ent.path[len(src_root_abs) + 1:]: ent for ent in scantree(src_root_abs)
     }
 
     # process dst tree
     for dst_entry in scantree(dst_root_abs, dir_first=False):
-        rel_path = dst_entry.path[len(dst_root_abs) + 1 :]
+        rel_path = dst_entry.path[len(dst_root_abs) + 1:]
 
         src_entry = src_files_map.get(rel_path)
 
@@ -238,7 +238,7 @@ def rsync(src_dir, dst_dir, dry_run=False):
     for src_entry in scantree(src_root_abs, dir_first=True):
         if not src_entry.is_dir():
             continue
-        rel_path = src_entry.path[len(src_root_abs) + 1 :]
+        rel_path = src_entry.path[len(src_root_abs) + 1:]
         dst_path = os.path.join(dst_root_abs, rel_path)
         src_stat = src_entry.stat(follow_symlinks=False)
         os.utime(dst_path,
