@@ -4,6 +4,7 @@ import argparse
 import logging
 import os.path
 import pathlib
+import shutil
 import sys
 
 from spqr.curateipsum.backup import initiate_backup
@@ -49,6 +50,10 @@ def main():
     logging.basicConfig(level=loglevel, handlers=[console_handler])
 
     _lg.info("Starting %s: %s", parser.prog, args)
+    if args.external_rsync and not shutil.which("rsync"):
+        _lg.error("rsync should be installed to use --external-rsync option.")
+        return 1
+
     backup_dir_abs = pathlib.Path(os.path.abspath(args.backup_dir))
     if not os.path.isdir(backup_dir_abs):
         _lg.error("Backup directory %s does not exist, exiting", args.backup_dir)
