@@ -85,17 +85,22 @@ WRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | O_BINARY
 BUFFER_SIZE = 128 * 1024
 
 
-def copyfile(src, dst):
-    fin = os.open(src, READ_FLAGS)
-    stat = os.fstat(fin)
-    fout = os.open(dst, WRITE_FLAGS, stat.st_mode)
-    for x in iter(lambda: os.read(fin, BUFFER_SIZE), b""):
-        os.write(fout, x)
-    os.close(fout)
-    os.close(fin)
-
+def copy_file(src, dst):
+    """ Copy file from src to dst. Faster than shutil.copy. """
+    try:
+        fin = os.open(src, READ_FLAGS)
+        stat = os.fstat(fin)
+        fout = os.open(dst, WRITE_FLAGS, stat.st_mode)
+        for x in iter(lambda: os.read(fin, BUFFER_SIZE), b""):
+            os.write(fout, x)
+    finally:
+        try: os.close(fout)
+        except: pass
+        try: os.close(fin)
+        except: pass
 
 def copy_direntry(entry: os.DirEntry, dst_path):
+    """ Non-recursive DirEntry (file, dir or symlink) copy. """
     if entry.is_dir():
         os.mkdir(dst_path)
 
@@ -104,7 +109,7 @@ def copy_direntry(entry: os.DirEntry, dst_path):
         os.symlink(link_target, dst_path)
 
     else:
-        copyfile(entry.path, dst_path)
+        copy_file(entry.path, dst_path)
 
     src_stat = entry.stat(follow_symlinks=False)
     os.chown(dst_path, src_stat.st_uid, src_stat.st_gid, follow_symlinks=False)
@@ -113,6 +118,11 @@ def copy_direntry(entry: os.DirEntry, dst_path):
 
 
 def update_direntry(src_entry: os.DirEntry, dst_entry: os.DirEntry):
+    """
+    Make dst DirEntry (file/dir/symlink) same as src.
+    If dst is directory, its content will be removed.
+    Src dir content will not be copied into dst dir.
+    """
     rm_direntry(dst_entry)
     copy_direntry(src_entry, dst_entry.path)
 
@@ -247,7 +257,7 @@ def _hardlink_dir_ext(src, dst) -> bool:
     Make hardlink for a directory using cp -al. Both src and dst should exist.
     :param src: absolute path to source directory.
     :param dst: absolute path to target directory.
-    :return: None
+    :return: success or not
     """
     if sys.platform == "darwin":
         cp = "gcp"
@@ -305,7 +315,7 @@ def hardlink_dir(src_dir, dst_dir) -> bool:
     Make hardlink for a directory with all its content.
     :param src_dir: path to source directory
     :param dst_dir: path to target directory
-    :return: boolean result
+    :return: success or not
     """
     _lg.info(f"Recursive hardlinking: {src_dir} -> {dst_dir}")
     src_abs = os.path.abspath(src_dir)
