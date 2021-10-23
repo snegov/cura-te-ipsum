@@ -20,17 +20,26 @@ class CommonFSTestCase(unittest.TestCase):
         self.tmp_dir_dst.cleanup()
 
     @staticmethod
-    def create_file(parent_dir, prefix=None):
+    def create_file(parent_dir: str, prefix: str = None) -> str:
+        """
+        Create file with random name in parent_dir.
+        Returns absolute path to created file.
+        """
         fd, path = tempfile.mkstemp(prefix=prefix, dir=parent_dir)
         with open(fd, "w") as f:
             f.write(string.printable)
         return path
 
     @staticmethod
-    def create_dir(parent_dir, prefix=None):
+    def create_dir(parent_dir: str, prefix: str = None) -> str:
+        """
+        Create directory with random name in parent_dir.
+        Returns absolute path to created directory.
+        """
         return tempfile.mkdtemp(prefix=prefix, dir=parent_dir)
 
-    def relpath(self, full_path):
+    def relpath(self, full_path: str) -> str:
+        """ Get relative path for entity in src/dst dirs. """
         if full_path.startswith(self.src_dir):
             p_dir = self.src_dir
         elif full_path.startswith(self.dst_dir):
@@ -118,7 +127,8 @@ class TestHardlinkDir(CommonFSTestCase):
 # TODO not finished
 class TestRsync(CommonFSTestCase):
     @staticmethod
-    def check_identical_file(file1, file2):
+    def check_identical_file(file1: str, file2: str):
+        """ Check that files are identical. Fails test, if not. """
         st1 = os.lstat(file1)
         st2 = os.lstat(file2)
 
@@ -135,7 +145,7 @@ class TestRsync(CommonFSTestCase):
         assert not os.path.lexists(dst_fpath)
 
     def test_dst_has_excess_symlink(self):
-        dst_lpath = os.path.join(self.dst_dir, 'broken_symlink')
+        dst_lpath = os.path.join(self.dst_dir, 'nonexisting_file')
         os.symlink('broken_symlink', dst_lpath)
 
         fs.rsync(self.src_dir, self.dst_dir)
@@ -239,3 +249,8 @@ class TestRsync(CommonFSTestCase):
         fs.rsync(self.src_dir, self.dst_dir)
         assert os.path.lexists(dst_fpath)
         self.check_identical_file(src_fpath, dst_fpath)
+
+    # TODO add tests for changing ownership
+    # TODO add tests for changing permissions
+    # TODO add tests for changing times (?)
+    # TODO add tests for symlink behaviour

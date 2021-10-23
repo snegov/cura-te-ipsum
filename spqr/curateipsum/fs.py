@@ -112,9 +112,12 @@ def copy_direntry(entry: os.DirEntry, dst_path):
         copy_file(entry.path, dst_path)
 
     src_stat = entry.stat(follow_symlinks=False)
-    os.chown(dst_path, src_stat.st_uid, src_stat.st_gid, follow_symlinks=False)
-    os.chmod(dst_path, src_stat.st_mode, follow_symlinks=False)
-    os.utime(dst_path, (src_stat.st_atime, src_stat.st_mtime), follow_symlinks=False)
+    if not entry.is_symlink() or os.chown in os.supports_follow_symlinks:
+        os.chown(dst_path, src_stat.st_uid, src_stat.st_gid, follow_symlinks=False)
+    if not entry.is_symlink() or os.chmod in os.supports_follow_symlinks:
+        os.chmod(dst_path, src_stat.st_mode, follow_symlinks=False)
+    if not entry.is_symlink() or os.utime in os.supports_follow_symlinks:
+        os.utime(dst_path, (src_stat.st_atime, src_stat.st_mtime), follow_symlinks=False)
 
 
 def update_direntry(src_entry: os.DirEntry, dst_entry: os.DirEntry):
