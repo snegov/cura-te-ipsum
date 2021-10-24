@@ -10,6 +10,7 @@ import sys
 from spqr.curateipsum.backup import initiate_backup
 
 _lg = logging.getLogger("spqr.curateipsum")
+SUPPORTED_PLATFORMS = ("linux", "darwin")
 
 
 def main():
@@ -39,6 +40,10 @@ def main():
                         action="store_true",
                         default=False,
                         help="Use external rsync for copying")
+    parser.add_argument("--external-hardlink",
+                        action="store_true",
+                        default=False,
+                        help="Use cp command for creating hardlink copies")
     parser.add_argument("sources",
                         nargs="+",
                         metavar="SOURCE",
@@ -50,8 +55,18 @@ def main():
     logging.basicConfig(level=loglevel, handlers=[console_handler])
 
     _lg.info("Starting %s: %s", parser.prog, args)
+
+    if sys.platform not in SUPPORTED_PLATFORMS:
+        _lg.error(f"Not supported platform: {sys.platform}. Supported platforms: {SUPPORTED_PLATFORMS}")
+        return 1
+
     if args.external_rsync and not shutil.which("rsync"):
         _lg.error("rsync should be installed to use --external-rsync option.")
+        return 1
+
+    cp_program = "gcp" if sys.platform == "darwin" else "cp"
+    if args.external_hardlink and not shutil.which(cp_program):
+        _lg.error(f"{cp_program} should be installed to use --external-hardlink option.")
         return 1
 
     backup_dir_abs = pathlib.Path(os.path.abspath(args.backup_dir))
@@ -65,10 +80,11 @@ def main():
             return 1
 
     initiate_backup(
-        args.sources,
-        backup_dir_abs,
+        sources=args.sources,
+        backup_dir=backup_dir_abs,
         dry_run=args.dry_run,
         external_rsync=args.external_rsync,
+        external_hardlink=args.external_hardlink,
     )
 
 

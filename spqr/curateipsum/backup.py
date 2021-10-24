@@ -18,6 +18,8 @@ _lg = logging.getLogger(__name__)
 
 def _is_backup_entity(entity_path: pathlib.Path) -> bool:
     """ Check if entity_path is a single backup dir. """
+    if not os.path.isdir(entity_path):
+        return False
     try:
         datetime.strptime(entity_path.name, BACKUP_ENT_FMT)
         return True
@@ -46,7 +48,8 @@ def _get_latest_backup(backup_dir: pathlib.Path) -> Optional[pathlib.Path]:
 def initiate_backup(sources,
                     backup_dir: pathlib.Path,
                     dry_run: bool = False,
-                    external_rsync: bool = False):
+                    external_rsync: bool = False,
+                    external_hardlink: bool = False):
     """ Main backup function """
 
     start_time = time.time()
@@ -67,7 +70,8 @@ def initiate_backup(sources,
         _lg.info("Copying data from latest backup %s to current backup %s",
                  latest_backup.name, cur_backup.name)
 
-        hl_res = fs.hardlink_dir(latest_backup, cur_backup)
+        hl_res = fs.hardlink_dir(src_dir=latest_backup, dst_dir=cur_backup,
+                                 use_external=external_hardlink)
         if not hl_res:
             _lg.error("Something went wrong during copying data from latest backup,"
                       " removing created %s", cur_backup.name)

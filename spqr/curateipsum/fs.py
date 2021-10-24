@@ -255,7 +255,7 @@ def rsync(src_dir, dst_dir, dry_run=False):
              follow_symlinks=False)
 
 
-def _hardlink_dir_ext(src, dst) -> bool:
+def _recursive_hardlink_ext(src: str, dst: str) -> bool:
     """
     Make hardlink for a directory using cp -al. Both src and dst should exist.
     :param src: absolute path to source directory.
@@ -277,7 +277,7 @@ def _hardlink_dir_ext(src, dst) -> bool:
     return not bool(exitcode)
 
 
-def _recursive_hardlink(src, dst) -> bool:
+def _recursive_hardlink(src: str, dst: str) -> bool:
     """
     Do hardlink directory recursively using python only.
     Both src and dst directories should exist.
@@ -313,11 +313,12 @@ def _recursive_hardlink(src, dst) -> bool:
     return True
 
 
-def hardlink_dir(src_dir, dst_dir) -> bool:
+def hardlink_dir(src_dir, dst_dir, use_external: bool = False) -> bool:
     """
     Make hardlink for a directory with all its content.
     :param src_dir: path to source directory
     :param dst_dir: path to target directory
+    :param use_external: whether to use external cp -al command
     :return: success or not
     """
     _lg.info(f"Recursive hardlinking: {src_dir} -> {dst_dir}")
@@ -335,4 +336,5 @@ def hardlink_dir(src_dir, dst_dir) -> bool:
     _lg.debug(f"Creating directory: {dst_abs}")
     os.mkdir(dst_abs)
 
-    return _recursive_hardlink(src_abs, dst_abs)
+    hardlink_func = _recursive_hardlink_ext if use_external else _recursive_hardlink
+    return hardlink_func(src_abs, dst_abs)
