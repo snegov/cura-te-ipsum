@@ -56,6 +56,21 @@ class TestHardlinkDir(CommonFSTestCase):
         self.src_dir = self.tmp_dir.name
         self.dst_dir = self.src_dir + ".copy"
 
+    @staticmethod
+    def check_directory_stats(d1_path: str, d2_path: str):
+        """ Check that directory was copied. Fails test, if not. """
+        dir1_stat = os.lstat(d1_path)
+        dir2_stat = os.lstat(d2_path)
+
+        assert dir1_stat.st_uid == dir2_stat.st_uid
+        assert dir1_stat.st_gid == dir2_stat.st_gid
+        assert dir1_stat.st_mode == dir2_stat.st_mode
+        assert dir1_stat.st_nlink == dir2_stat.st_nlink
+        assert dir1_stat.st_size == dir2_stat.st_size
+        assert dir1_stat.st_size == dir2_stat.st_size
+        # only mtime is checked
+        assert dir1_stat.st_mtime == dir2_stat.st_mtime
+
     def test_common_file(self):
         cf_path = self.create_file(self.src_dir)
         cf_relpath = self.relpath(cf_path)
@@ -119,18 +134,32 @@ class TestHardlinkDir(CommonFSTestCase):
         assert os.path.samestat(src_hl_stat, dst_hl_stat)
         assert src_cf_stat.st_nlink == 4
 
+    def test_nested_dir(self):
+        src_ndir_path = self.create_dir(self.src_dir)
+        src_nfile_path = self.create_file(src_ndir_path)
+        ndir_relpath = self.relpath(src_ndir_path)
+        nfile_relpath = self.relpath(src_nfile_path)
+
+        fs.hardlink_dir(self.src_dir, self.dst_dir)
+        self.check_directory_stats(src_ndir_path, os.path.join(self.dst_dir, ndir_relpath))
+
+        # check file in nested directory
+        src_fstat = os.lstat(src_nfile_path)
+        dst_fstat = os.lstat(os.path.join(self.dst_dir, nfile_relpath))
+        assert os.path.samestat(src_fstat, dst_fstat)
+        assert src_fstat.st_nlink == 2
+
     def tearDown(self):
         self.tmp_dir.cleanup()
         shutil.rmtree(self.dst_dir, ignore_errors=True)
 
 
-# TODO not finished
 class TestRsync(CommonFSTestCase):
     @staticmethod
-    def check_identical_file(file1: str, file2: str):
+    def check_identical_file(f1_path: str, f2_path: str):
         """ Check that files are identical. Fails test, if not. """
-        st1 = os.lstat(file1)
-        st2 = os.lstat(file2)
+        st1 = os.lstat(f1_path)
+        st2 = os.lstat(f2_path)
 
         assert st1.st_uid == st2.st_uid
         assert st1.st_gid == st2.st_gid
