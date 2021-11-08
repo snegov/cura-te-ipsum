@@ -3,7 +3,6 @@
 import argparse
 import logging
 import os.path
-import pathlib
 import shutil
 import sys
 
@@ -29,7 +28,7 @@ def main():
     parser.add_argument("-b",
                         dest="backup_dir",
                         metavar="BACKUP_DIR",
-                        type=pathlib.Path,
+                        type=str,
                         required=True,
                         help="directory, where all backups will be stored")
     parser.add_argument("-n", "--dry-run",
@@ -47,7 +46,7 @@ def main():
     parser.add_argument("sources",
                         nargs="+",
                         metavar="SOURCE",
-                        type=pathlib.Path,
+                        type=str,
                         help="backup source (file/dir/smth else)")
     args = parser.parse_args()
 
@@ -69,7 +68,7 @@ def main():
         _lg.error(f"{cp_program} should be installed to use --external-hardlink option.")
         return 1
 
-    backup_dir_abs = pathlib.Path(os.path.abspath(args.backup_dir))
+    backup_dir_abs = os.path.abspath(args.backup_dir)
     if not os.path.isdir(backup_dir_abs):
         _lg.error("Backup directory %s does not exist, exiting", args.backup_dir)
         return 1

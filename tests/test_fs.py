@@ -170,27 +170,27 @@ class TestRsync(CommonFSTestCase):
     def test_dst_has_excess_file(self):
         dst_fpath = self.create_file(self.dst_dir)
 
-        fs.rsync(self.src_dir, self.dst_dir)
+        all(fs.rsync(self.src_dir, self.dst_dir))
         assert not os.path.lexists(dst_fpath)
 
     def test_dst_has_excess_symlink(self):
         dst_lpath = os.path.join(self.dst_dir, 'nonexisting_file')
         os.symlink('broken_symlink', dst_lpath)
 
-        fs.rsync(self.src_dir, self.dst_dir)
+        all(fs.rsync(self.src_dir, self.dst_dir))
         assert not os.path.lexists(dst_lpath)
 
     def test_dst_has_excess_empty_dir(self):
         dst_dpath = self.create_dir(self.dst_dir)
 
-        fs.rsync(self.src_dir, self.dst_dir)
+        all(fs.rsync(self.src_dir, self.dst_dir))
         assert not os.path.lexists(dst_dpath)
 
     def test_dst_has_excess_nonempty_dir(self):
         dst_dpath = self.create_dir(self.dst_dir)
         self.create_file(dst_dpath)
 
-        fs.rsync(self.src_dir, self.dst_dir)
+        all(fs.rsync(self.src_dir, self.dst_dir))
         assert not os.path.lexists(dst_dpath)
 
     def test_dst_has_excess_nonempty_recursive_dir(self):
@@ -198,7 +198,7 @@ class TestRsync(CommonFSTestCase):
         nested_dpath = self.create_dir(dst_dpath)
         self.create_file(nested_dpath)
 
-        fs.rsync(self.src_dir, self.dst_dir)
+        all(fs.rsync(self.src_dir, self.dst_dir))
         assert not os.path.lexists(dst_dpath)
 
     def test_different_types_src_file_dst_dir(self):
@@ -206,7 +206,7 @@ class TestRsync(CommonFSTestCase):
         dst_path = os.path.join(self.dst_dir, self.relpath(src_fpath))
         os.mkdir(dst_path)
 
-        fs.rsync(self.src_dir, self.dst_dir)
+        all(fs.rsync(self.src_dir, self.dst_dir))
         assert os.path.lexists(dst_path)
         assert os.path.isfile(dst_path)
 
@@ -215,7 +215,7 @@ class TestRsync(CommonFSTestCase):
         dst_path = os.path.join(self.dst_dir, self.relpath(src_fpath))
         os.symlink('broken_link', dst_path)
 
-        fs.rsync(self.src_dir, self.dst_dir)
+        all(fs.rsync(self.src_dir, self.dst_dir))
         assert os.path.lexists(dst_path)
         assert os.path.isfile(dst_path)
 
@@ -224,7 +224,7 @@ class TestRsync(CommonFSTestCase):
         src_lpath = os.path.join(self.src_dir, self.relpath(dst_path))
         os.symlink('broken_link', src_lpath)
 
-        fs.rsync(self.src_dir, self.dst_dir)
+        all(fs.rsync(self.src_dir, self.dst_dir))
         assert os.path.lexists(dst_path)
         assert os.path.islink(dst_path)
 
@@ -233,7 +233,7 @@ class TestRsync(CommonFSTestCase):
         src_lpath = os.path.join(self.src_dir, self.relpath(dst_path))
         os.symlink('broken_link', src_lpath)
 
-        fs.rsync(self.src_dir, self.dst_dir)
+        all(fs.rsync(self.src_dir, self.dst_dir))
         assert os.path.lexists(dst_path)
         assert os.path.islink(dst_path)
 
@@ -243,7 +243,7 @@ class TestRsync(CommonFSTestCase):
         with open(dst_path, "w") as f:
             f.write(string.printable)
 
-        fs.rsync(self.src_dir, self.dst_dir)
+        all(fs.rsync(self.src_dir, self.dst_dir))
         assert os.path.lexists(dst_path)
         assert os.path.isdir(dst_path)
 
@@ -252,7 +252,7 @@ class TestRsync(CommonFSTestCase):
         dst_path = os.path.join(self.dst_dir, self.relpath(src_dpath))
         os.symlink('broken_link', dst_path)
 
-        fs.rsync(self.src_dir, self.dst_dir)
+        all(fs.rsync(self.src_dir, self.dst_dir))
         assert os.path.lexists(dst_path)
         assert os.path.isdir(dst_path)
 
@@ -261,7 +261,7 @@ class TestRsync(CommonFSTestCase):
         dst_fpath = os.path.join(self.dst_dir, self.relpath(src_fpath))
         os.link(src_fpath, dst_fpath)
 
-        fs.rsync(self.src_dir, self.dst_dir)
+        all(fs.rsync(self.src_dir, self.dst_dir))
         assert os.path.lexists(dst_fpath)
         src_stat = os.lstat(src_fpath)
         dst_stat = os.lstat(dst_fpath)
@@ -275,7 +275,7 @@ class TestRsync(CommonFSTestCase):
         with open(dst_fpath, "w") as df:
             df.write(string.printable * 2)
 
-        fs.rsync(self.src_dir, self.dst_dir)
+        all(fs.rsync(self.src_dir, self.dst_dir))
         assert os.path.lexists(dst_fpath)
         self.check_identical_file(src_fpath, dst_fpath)
 
