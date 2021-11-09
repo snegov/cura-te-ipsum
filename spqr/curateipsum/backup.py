@@ -90,6 +90,7 @@ def initiate_backup(sources,
 
     rsync_func = fs.rsync_ext if external_rsync else fs.rsync
 
+    backup_changed = False
     for src in sources:
         src_abs = os.path.abspath(src)
         src_name = os.path.basename(src_abs)
@@ -102,8 +103,16 @@ def initiate_backup(sources,
                     entry_relpath=os.path.join(src_name, entry_relpath),
                     action=action
                 )
+            backup_changed = True
+
+    # do not create backup on dry-run
     if dry_run:
         _lg.info("Dry-run, removing created backup: %s", cur_backup_name)
+        shutil.rmtree(cur_backup, ignore_errors=True)
+    # do not create backup if no change from previous one
+    elif latest_backup is not None and not backup_changed:
+        _lg.info("Newly created backup %s is the same as previous one %s, removing",
+                 cur_backup_name, os.path.basename(latest_backup))
         shutil.rmtree(cur_backup, ignore_errors=True)
     else:
         _lg.info("Backup created: %s", cur_backup_name)
