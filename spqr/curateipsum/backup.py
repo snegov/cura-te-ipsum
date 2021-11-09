@@ -96,12 +96,12 @@ def initiate_backup(sources,
         dst_abs = os.path.join(cur_backup, src_name)
         _lg.info("Backing up directory %s to %s backup", src_abs, cur_backup_name)
         for entry_relpath, action in rsync_func(src_abs, dst_abs, dry_run=dry_run):
-            process_backed_entry(
-                backup_dir=cur_backup,
-                entry_relpath=os.path.join(src_name, entry_relpath),
-                action=action
-            )
-
+            if latest_backup is not None:
+                process_backed_entry(
+                    backup_dir=cur_backup,
+                    entry_relpath=os.path.join(src_name, entry_relpath),
+                    action=action
+                )
     if dry_run:
         _lg.info("Dry-run, removing created backup: %s", cur_backup_name)
         shutil.rmtree(cur_backup, ignore_errors=True)
