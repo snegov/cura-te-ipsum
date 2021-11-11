@@ -6,7 +6,7 @@ import os.path
 import shutil
 import sys
 
-from spqr.curateipsum.backup import initiate_backup
+import spqr.curateipsum.backup as backup
 
 _lg = logging.getLogger("spqr.curateipsum")
 SUPPORTED_PLATFORMS = ("linux", "darwin")
@@ -56,7 +56,8 @@ def main():
     _lg.info("Starting %s: %s", parser.prog, args)
 
     if sys.platform not in SUPPORTED_PLATFORMS:
-        _lg.error(f"Not supported platform: {sys.platform}. Supported platforms: {SUPPORTED_PLATFORMS}")
+        _lg.error("Not supported platform: %s. Supported platforms: %s",
+                  sys.platform, SUPPORTED_PLATFORMS)
         return 1
 
     if args.external_rsync and not shutil.which("rsync"):
@@ -65,7 +66,8 @@ def main():
 
     cp_program = "gcp" if sys.platform == "darwin" else "cp"
     if args.external_hardlink and not shutil.which(cp_program):
-        _lg.error(f"{cp_program} should be installed to use --external-hardlink option.")
+        _lg.error("%s should be installed to use --external-hardlink option.",
+                  cp_program)
         return 1
 
     backup_dir_abs = os.path.abspath(args.backup_dir)
@@ -78,7 +80,9 @@ def main():
             _lg.error("Source directory %s does not exist", src_dir)
             return 1
 
-    initiate_backup(
+    backup.cleanup_old_backups(backup_dir=backup_dir_abs, dry_run=args.dry_run)
+
+    backup.initiate_backup(
         sources=args.sources,
         backup_dir=backup_dir_abs,
         dry_run=args.dry_run,

@@ -22,6 +22,27 @@ class Actions(enum.Enum):
     update_owner = enum.auto()
     create = enum.auto()
 
+
+class PseudoDirEntry:
+    def __init__(self, path):
+        self.path = os.path.realpath(path)
+        self.name = os.path.basename(self.path)
+        self._is_dir = None
+        self._stat = None
+
+    def __str__(self):
+        return self.name
+
+    def is_dir(self) -> bool:
+        if self._is_dir is None:
+            self._is_dir = os.path.isdir(self.path)
+        return self._is_dir
+
+    def stat(self):
+        if self._stat is None:
+            self._stat = os.lstat(self.path)
+        return self._stat
+
 # *deleting will_be_deleted
 # >f.st.... .gitignore
 # >f+++++++ LICENSE
@@ -79,7 +100,9 @@ def rsync_ext(src, dst, dry_run=False):
     rsync_args.append(str(dst))
 
     _lg.info("Executing external command: %s", " ".join(rsync_args))
-    process = subprocess.Popen(rsync_args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    process = subprocess.Popen(rsync_args,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT)
     with process.stdout:
         prev_line = None
         for line in iter(process.stdout.readline, b""):
@@ -246,10 +269,12 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
     dst_root_abs = os.path.abspath(dst_dir)
 
     if not os.path.isdir(src_root_abs):
-        raise RuntimeError(f"Error during reading source directory: {src_root_abs}")
+        raise RuntimeError("Error during reading source directory: %s"
+                           % src_root_abs)
     if os.path.exists(dst_root_abs):
         if not os.path.isdir(dst_root_abs):
-            raise RuntimeError("Destination path is not a directory: %s" % dst_root_abs)
+            raise RuntimeError("Destination path is not a directory: %s"
+                               % dst_root_abs)
     else:
         os.mkdir(dst_root_abs)
 
@@ -278,19 +303,22 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
         # rewrite dst if it has different than src type
         if src_entry.is_file(follow_symlinks=False):
             if not dst_entry.is_file(follow_symlinks=False):
-                _lg.debug("Rewriting (src is a file, dst is not a file): %s", rel_path)
+                _lg.debug("Rewriting (src is a file, dst is not a file): %s",
+                          rel_path)
                 update_direntry(src_entry, dst_entry)
                 yield rel_path, Actions.rewrite
                 continue
         if src_entry.is_dir(follow_symlinks=False):
             if not dst_entry.is_dir(follow_symlinks=False):
-                _lg.debug("Rewriting (src is a dir, dst is not a dir): %s", rel_path)
+                _lg.debug("Rewriting (src is a dir, dst is not a dir): %s",
+                          rel_path)
                 update_direntry(src_entry, dst_entry)
                 yield rel_path, Actions.rewrite
                 continue
         if src_entry.is_symlink():
             if not dst_entry.is_symlink():
-                _lg.debug("Rewriting (src is a symlink, dst is not a symlink): %s", rel_path)
+                _lg.debug("Rewriting (src is a symlink, dst is not a symlink): %s",
+                          rel_path)
                 update_direntry(src_entry, dst_entry)
                 yield rel_path, Actions.rewrite
                 continue
@@ -379,7 +407,9 @@ def _recursive_hardlink_ext(src: str, dst: str) -> bool:
     src_content = glob.glob(f"{src}/*")
     cmd = [cp, "--archive", "--verbose", "--link", *src_content, dst]
     _lg.info("Executing external command: %s", " ".join(cmd))
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    process = subprocess.Popen(cmd,
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT)
     with process.stdout:
         for line in iter(process.stdout.readline, b""):
             _lg.debug("%s: %s", cp, line.decode("utf-8").strip())
@@ -458,10 +488,11 @@ def nest_hardlink(src_dir: str, src_relpath: str, dst_dir: str):
 
     # check source entity and destination directory
     if not os.path.exists(src_full_path):
-        raise RuntimeError(f"Error reading source entity: {src_full_path}")
+        raise RuntimeError("Error reading source entity: %s" % src_full_path)
     if os.path.exists(dst_dir_abs):
         if not os.path.isdir(dst_dir_abs):
-            raise RuntimeError("Destination path is not a directory: %s" % dst_dir_abs)
+            raise RuntimeError("Destination path is not a directory: %s"
+                               % dst_dir_abs)
     else:
         os.mkdir(dst_dir_abs)
 
