@@ -291,7 +291,7 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
 
         # remove dst entries not existing in source
         if src_entry is None:
-            _lg.debug("Deleting: %s", rel_path)
+            _lg.debug("Rsync, deleting: %s", rel_path)
             rm_direntry(dst_entry)
             yield rel_path, Actions.delete
             continue
@@ -303,21 +303,21 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
         # rewrite dst if it has different than src type
         if src_entry.is_file(follow_symlinks=False):
             if not dst_entry.is_file(follow_symlinks=False):
-                _lg.debug("Rewriting (src is a file, dst is not a file): %s",
+                _lg.debug("Rsync, rewriting (src is a file, dst is not a file): %s",
                           rel_path)
                 update_direntry(src_entry, dst_entry)
                 yield rel_path, Actions.rewrite
                 continue
         if src_entry.is_dir(follow_symlinks=False):
             if not dst_entry.is_dir(follow_symlinks=False):
-                _lg.debug("Rewriting (src is a dir, dst is not a dir): %s",
+                _lg.debug("Rsync, rewriting (src is a dir, dst is not a dir): %s",
                           rel_path)
                 update_direntry(src_entry, dst_entry)
                 yield rel_path, Actions.rewrite
                 continue
         if src_entry.is_symlink():
             if not dst_entry.is_symlink():
-                _lg.debug("Rewriting (src is a symlink, dst is not a symlink): %s",
+                _lg.debug("Rsync, rewriting (src is a symlink, dst is not a symlink): %s",
                           rel_path)
                 update_direntry(src_entry, dst_entry)
                 yield rel_path, Actions.rewrite
@@ -325,7 +325,7 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
 
         # rewrite dst if it is hard link to src (bad for backups)
         if src_entry.inode() == dst_entry.inode():
-            _lg.debug("Rewriting (different inodes): %s", rel_path)
+            _lg.debug("Rsync, rewriting (different inodes): %s", rel_path)
             update_direntry(src_entry, dst_entry)
             yield rel_path, Actions.rewrite
             continue
@@ -339,7 +339,7 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
             same_mtime = src_stat.st_mtime == dst_stat.st_mtime
             if not (same_size and same_mtime):
                 reason = "size" if not same_size else "time"
-                _lg.debug("Rewriting (different %s): %s", reason, rel_path)
+                _lg.debug("Rsync, rewriting (different %s): %s", reason, rel_path)
                 update_direntry(src_entry, dst_entry)
                 yield rel_path, Actions.rewrite
                 continue
@@ -347,25 +347,25 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
         # rewrite dst symlink if it points somewhere else than src
         if src_entry.is_symlink():
             if os.readlink(src_entry.path) != os.readlink(dst_entry.path):
-                _lg.debug("Rewriting (different symlink target): %s", rel_path)
+                _lg.debug("Rsync, rewriting (different symlink target): %s", rel_path)
                 update_direntry(src_entry, dst_entry)
                 continue
 
         # update permissions and ownership
         if src_stat.st_mode != dst_stat.st_mode:
-            _lg.debug("Updating permissions: %s", rel_path)
+            _lg.debug("Rsync, updating permissions: %s", rel_path)
             yield rel_path, Actions.update_perm
             os.chmod(dst_entry.path, dst_stat.st_mode)
 
         if src_stat.st_uid != dst_stat.st_uid or src_stat.st_gid != dst_stat.st_gid:
-            _lg.debug("Updating owners: %s", rel_path)
+            _lg.debug("Rsync, updating owners: %s", rel_path)
             yield rel_path, Actions.update_owner
             os.chown(dst_entry.path, src_stat.st_uid, src_stat.st_gid)
 
     # process remained source entries
     for rel_path, src_entry in src_files_map.items():
         dst_path = os.path.join(dst_root_abs, rel_path)
-        _lg.debug("Creating: %s", rel_path)
+        _lg.debug("Rsync, creating: %s", rel_path)
         copy_direntry(src_entry, dst_path)
         yield rel_path, Actions.create
 
@@ -378,7 +378,7 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
         src_stat = src_entry.stat(follow_symlinks=False)
         dst_stat = os.lstat(dst_path)
         if src_stat.st_mtime != dst_stat.st_mtime:
-            _lg.debug("Restoring directory mtime: %s", dst_path)
+            _lg.debug("Rsync, restoring directory mtime: %s", dst_path)
             os.utime(dst_path,
                      (src_stat.st_atime, src_stat.st_mtime),
                      follow_symlinks=False)
@@ -387,7 +387,7 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
     src_root_stat = os.lstat(src_root_abs)
     dst_root_stat = os.lstat(dst_root_abs)
     if src_root_stat.st_mtime != dst_root_stat.st_mtime:
-        _lg.debug("Restoring root directory mtime: %s", src_root_abs)
+        _lg.debug("Rsync, restoring root directory mtime: %s", src_root_abs)
         os.utime(dst_root_abs,
                  (src_root_stat.st_atime, src_root_stat.st_mtime),
                  follow_symlinks=False)
@@ -430,7 +430,8 @@ def _recursive_hardlink(src: str, dst: str) -> bool:
         for ent in it:
             ent_dst_path = os.path.join(dst, ent.name)
             if ent.is_dir(follow_symlinks=False):
-                _lg.debug("Copying directory: %s -> %s", ent.path, ent_dst_path)
+                _lg.debug("Hardlink, copying directory: %s -> %s",
+                          ent.path, ent_dst_path)
                 os.mkdir(ent_dst_path)
 
                 # process directory children
@@ -444,7 +445,8 @@ def _recursive_hardlink(src: str, dst: str) -> bool:
 
                 continue
             if ent.is_file(follow_symlinks=False) or ent.is_symlink():
-                _lg.debug("Hardlink file: %s -> %s", ent.path, ent_dst_path)
+                _lg.debug("Hardlink, creating link for file: %s -> %s",
+                          ent.path, ent_dst_path)
                 os.link(ent.path, ent_dst_path, follow_symlinks=False)
                 continue
             # something that is not a file, symlink or directory
@@ -469,7 +471,7 @@ def hardlink_dir(src_dir, dst_dir, use_external: bool = False) -> bool:
         raise RuntimeError(f"Error reading source directory: {src_dir}")
     if os.path.exists(dst_abs):
         raise RuntimeError(f"Destination already exists: {dst_dir}")
-    _lg.debug("Creating directory: %s", dst_abs)
+    _lg.debug("Hardlink, creating directory: %s", dst_abs)
     os.mkdir(dst_abs)
 
     hardlink_func = _recursive_hardlink_ext if use_external else _recursive_hardlink
