@@ -5,14 +5,14 @@ Module with backup functions.
 import logging
 import os
 import shutil
-import time
 from datetime import datetime, timedelta
 from typing import Optional, Iterable
 
 import spqr.curateipsum.fs as fs
 
-BACKUP_ENT_FMT = "%Y%m%d_%H%M"
-DELTA_DIR = "_delta"
+BACKUP_ENT_FMT = "%Y%m%d_%H%M%S"
+LOCK_FILE = ".backups_lock"
+DELTA_DIR = ".backup_delta"
 _lg = logging.getLogger(__name__)
 
 
@@ -53,6 +53,24 @@ def _get_latest_backup(backup_dir: str) -> Optional[os.DirEntry]:
 
 def _date_from_backup(backup: os.DirEntry) -> datetime:
     return datetime.strptime(backup.name, BACKUP_ENT_FMT)
+
+
+def set_backups_lock(backup_dir: str, force: bool = False) -> bool:
+    """ Return false if previous backup is still running. """
+    lock_file_path = os.path.join(backup_dir, LOCK_FILE)
+    if os.path.exists(lock_file_path):
+        if not force:
+            return False
+        os.unlink(lock_file_path)
+
+    open(lock_file_path, "a").close()
+    return True
+
+
+def release_backups_lock(backup_dir: str):
+    lock_file_path = os.path.join(backup_dir, LOCK_FILE)
+    if os.path.exists(lock_file_path):
+        os.unlink(lock_file_path)
 
 
 def cleanup_old_backups(
@@ -161,8 +179,8 @@ def cleanup_old_backups(
         to_remove[backup] = True
 
     for backup, do_delete in to_remove.items():
-        _lg.info("Removing old backup %s", backup.name)
         if not dry_run and do_delete:
+            _lg.info("Removing old backup %s", backup.name)
             shutil.rmtree(backup.path)
 
 
@@ -180,8 +198,7 @@ def initiate_backup(sources,
                     external_hardlink: bool = False):
     """ Main backup function """
 
-    start_time = time.time()
-    start_time_fmt = datetime.fromtimestamp(start_time).strftime(BACKUP_ENT_FMT)
+    start_time_fmt = datetime.now().strftime(BACKUP_ENT_FMT)
     cur_backup = fs.PseudoDirEntry(os.path.join(backup_dir, start_time_fmt))
     _lg.debug("Current backup dir: %s", cur_backup.path)
 
@@ -193,12 +210,6 @@ def initiate_backup(sources,
         os.mkdir(cur_backup.path)
 
     else:
-        # TODO check last backup is finalized
-        if cur_backup.name == latest_backup.name:
-            _lg.warning("Latest backup %s was created less than minute ago, exiting",
-                        latest_backup.name)
-            return
-
         _lg.info("Copying data from latest backup %s to current backup %s",
                  latest_backup.name, cur_backup.name)
 
@@ -242,7 +253,3 @@ def initiate_backup(sources,
         shutil.rmtree(cur_backup.path, ignore_errors=True)
     else:
         _lg.info("Backup created: %s", cur_backup.name)
-
-    end_time = time.time()
-    spend_time = end_time - start_time
-    _lg.info("Finished, time spent: %.3fs", spend_time)

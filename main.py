@@ -5,6 +5,7 @@ import logging
 import os.path
 import shutil
 import sys
+import time
 
 import spqr.curateipsum.backup as backup
 
@@ -35,6 +36,10 @@ def main():
                         action="store_true",
                         default=False,
                         help="Do not do create backup")
+    parser.add_argument("-f", "--force",
+                        action="store_true",
+                        default=False,
+                        help="Force run when previous backup is still in process")
     parser.add_argument("--external-rsync",
                         action="store_true",
                         default=False,
@@ -80,8 +85,13 @@ def main():
             _lg.error("Source directory %s does not exist", src_dir)
             return 1
 
-    backup.cleanup_old_backups(backup_dir=backup_dir_abs, dry_run=args.dry_run)
+    start_time = time.time()
 
+    if not backup.set_backups_lock(backup_dir_abs, args.force):
+        _lg.warning("Previous backup is still in process, exiting")
+        return 1
+
+    backup.cleanup_old_backups(backup_dir=backup_dir_abs, dry_run=args.dry_run)
     backup.initiate_backup(
         sources=args.sources,
         backup_dir=backup_dir_abs,
@@ -89,6 +99,11 @@ def main():
         external_rsync=args.external_rsync,
         external_hardlink=args.external_hardlink,
     )
+
+    backup.release_backups_lock(backup_dir_abs)
+    end_time = time.time()
+    spent_time = end_time - start_time
+    _lg.info("Finished, time spent: %.3fs", spent_time)
 
 
 if __name__ == "__main__":
