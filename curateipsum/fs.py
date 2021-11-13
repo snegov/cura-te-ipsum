@@ -43,18 +43,6 @@ class PseudoDirEntry:
             self._stat = os.lstat(self.path)
         return self._stat
 
-# *deleting will_be_deleted
-# >f.st.... .gitignore
-# >f+++++++ LICENSE
-# >f+++++++ LICENSE-sym
-# >f+++++++ README.md
-# >f+++++++ find_stale_torrents.py
-# >f+++++++ rootfile
-# cL+++++++ test -> rootfile
-# cd+++++++ folder/
-# >f+++++++ folder/in-folder
-# cd+++++++ java-alg/
-
 
 def _parse_rsync_output(line: str) -> Tuple[str, Actions]:
     action = None

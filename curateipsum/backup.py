@@ -8,7 +8,7 @@ import shutil
 from datetime import datetime, timedelta
 from typing import Optional, Iterable
 
-import spqr.curateipsum.fs as fs
+import curateipsum.fs as fs
 
 BACKUP_ENT_FMT = "%Y%m%d_%H%M%S"
 LOCK_FILE = ".backups_lock"

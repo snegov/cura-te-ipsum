@@ -5,7 +5,7 @@ import string
 import tempfile
 import unittest
 
-from spqr.curateipsum import fs
+from curateipsum import fs
 
 
 class CommonFSTestCase(unittest.TestCase):

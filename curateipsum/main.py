@@ -7,7 +7,7 @@ import shutil
 import sys
 import time
 
-import spqr.curateipsum.backup as backup
+import curateipsum.backup as backup
 
 _lg = logging.getLogger("spqr.curateipsum")
 SUPPORTED_PLATFORMS = ("linux", "darwin")
