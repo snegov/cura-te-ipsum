@@ -7,7 +7,7 @@ import shutil
 import sys
 import time
 
-import curateipsum.backup as backup
+from curateipsum import backup
 
 _lg = logging.getLogger("spqr.curateipsum")
 SUPPORTED_PLATFORMS = ("linux", "darwin")
@@ -21,7 +21,7 @@ def main():
     parser = argparse.ArgumentParser(
         prog="cura-te-ipsum", description="cura-te-ipsum, my personal backup software.",
     )
-    parser.add_argument("-V", "--version", action="version", version="%(prog)s 0.1")
+    parser.add_argument("-V", "--version", action="version", version="%(prog)s 0.0.1")
     parser.add_argument("-v", "--verbose",
                         action="store_true",
                         default=False,
@@ -104,6 +104,8 @@ def main():
     end_time = time.time()
     spent_time = end_time - start_time
     _lg.info("Finished, time spent: %.3fs", spent_time)
+
+    return 0
 
 
 if __name__ == "__main__":

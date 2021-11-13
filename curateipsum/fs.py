@@ -14,13 +14,13 @@ _lg = logging.getLogger(__name__)
 
 
 class Actions(enum.Enum):
-    nothing = enum.auto()
-    delete = enum.auto()
-    rewrite = enum.auto()
-    update_time = enum.auto()
-    update_perm = enum.auto()
-    update_owner = enum.auto()
-    create = enum.auto()
+    NOTHING = enum.auto()
+    DELETE = enum.auto()
+    REWRITE = enum.auto()
+    UPDATE_TIME = enum.auto()
+    UPDATE_PERM = enum.auto()
+    UPDATE_OWNER = enum.auto()
+    CREATE = enum.auto()
 
 
 class PseudoDirEntry:
@@ -48,24 +48,24 @@ def _parse_rsync_output(line: str) -> Tuple[str, Actions]:
     action = None
     change_string, relpath = line.split(' ', maxsplit=1)
     if change_string == "*deleting":
-        return relpath, Actions.delete
+        return relpath, Actions.DELETE
 
     update_type = change_string[0]
     entity_type = change_string[1]
     change_type = change_string[2:]
 
     if update_type == "c" and entity_type in {"d", "L"} and "+" in change_type:
-        action = Actions.create
+        action = Actions.CREATE
     elif update_type == ">" and entity_type == "f" and "+" in change_type:
-        action = Actions.create
+        action = Actions.CREATE
     elif entity_type == "f" and ("s" in change_type or "t" in change_type):
-        action = Actions.rewrite
+        action = Actions.REWRITE
     elif entity_type == "d" and "t" in change_type:
-        action = Actions.update_time
+        action = Actions.UPDATE_TIME
     elif "p" in change_type:
-        action = Actions.update_perm
+        action = Actions.UPDATE_PERM
     elif "o" in change_type or "g" in change_type:
-        action = Actions.update_owner
+        action = Actions.UPDATE_OWNER
 
     if action is None:
         raise RuntimeError("Not parsed string: %s" % line)
@@ -123,7 +123,6 @@ def rsync_ext(src, dst, dry_run=False):
 def scantree(path, dir_first=True) -> Iterable[os.DirEntry]:
     """Recursively yield DirEntry file objects for given directory."""
     entry: os.DirEntry
-    """Recursively yield DirEntry objects for given directory."""
     with os.scandir(path) as scan_it:
         for entry in scan_it:
             if entry.is_dir(follow_symlinks=False):
@@ -281,7 +280,7 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
         if src_entry is None:
             _lg.debug("Rsync, deleting: %s", rel_path)
             rm_direntry(dst_entry)
-            yield rel_path, Actions.delete
+            yield rel_path, Actions.DELETE
             continue
 
         # mark src entry as taken for processing
@@ -294,28 +293,28 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
                 _lg.debug("Rsync, rewriting (src is a file, dst is not a file): %s",
                           rel_path)
                 update_direntry(src_entry, dst_entry)
-                yield rel_path, Actions.rewrite
+                yield rel_path, Actions.REWRITE
                 continue
         if src_entry.is_dir(follow_symlinks=False):
             if not dst_entry.is_dir(follow_symlinks=False):
                 _lg.debug("Rsync, rewriting (src is a dir, dst is not a dir): %s",
                           rel_path)
                 update_direntry(src_entry, dst_entry)
-                yield rel_path, Actions.rewrite
+                yield rel_path, Actions.REWRITE
                 continue
         if src_entry.is_symlink():
             if not dst_entry.is_symlink():
                 _lg.debug("Rsync, rewriting (src is a symlink, dst is not a symlink): %s",
                           rel_path)
                 update_direntry(src_entry, dst_entry)
-                yield rel_path, Actions.rewrite
+                yield rel_path, Actions.REWRITE
                 continue
 
         # rewrite dst if it is hard link to src (bad for backups)
         if src_entry.inode() == dst_entry.inode():
             _lg.debug("Rsync, rewriting (different inodes): %s", rel_path)
             update_direntry(src_entry, dst_entry)
-            yield rel_path, Actions.rewrite
+            yield rel_path, Actions.REWRITE
             continue
 
         src_stat = src_entry.stat(follow_symlinks=False)
@@ -329,7 +328,7 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
                 reason = "size" if not same_size else "time"
                 _lg.debug("Rsync, rewriting (different %s): %s", reason, rel_path)
                 update_direntry(src_entry, dst_entry)
-                yield rel_path, Actions.rewrite
+                yield rel_path, Actions.REWRITE
                 continue
 
         # rewrite dst symlink if it points somewhere else than src
@@ -342,12 +341,12 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
         # update permissions and ownership
         if src_stat.st_mode != dst_stat.st_mode:
             _lg.debug("Rsync, updating permissions: %s", rel_path)
-            yield rel_path, Actions.update_perm
+            yield rel_path, Actions.UPDATE_PERM
             os.chmod(dst_entry.path, dst_stat.st_mode)
 
         if src_stat.st_uid != dst_stat.st_uid or src_stat.st_gid != dst_stat.st_gid:
             _lg.debug("Rsync, updating owners: %s", rel_path)
-            yield rel_path, Actions.update_owner
+            yield rel_path, Actions.UPDATE_OWNER
             os.chown(dst_entry.path, src_stat.st_uid, src_stat.st_gid)
 
     # process remained source entries
@@ -355,7 +354,7 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
         dst_path = os.path.join(dst_root_abs, rel_path)
         _lg.debug("Rsync, creating: %s", rel_path)
         copy_direntry(src_entry, dst_path)
-        yield rel_path, Actions.create
+        yield rel_path, Actions.CREATE
 
     # restore dir mtimes in dst, updated by updating files
     for src_entry in scantree(src_root_abs, dir_first=True):

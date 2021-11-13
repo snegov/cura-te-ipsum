@@ -8,7 +8,7 @@ import shutil
 from datetime import datetime, timedelta
 from typing import Optional, Iterable
 
-import curateipsum.fs as fs
+from curateipsum import fs
 
 BACKUP_ENT_FMT = "%Y%m%d_%H%M%S"
 LOCK_FILE = ".backups_lock"
@@ -103,7 +103,7 @@ def cleanup_old_backups(
     if not all_backups:
         _lg.debug("No backups, exiting")
         return
-    elif len(all_backups) == 1:
+    if len(all_backups) == 1:
         _lg.debug("Only one backup (%s) exists, will not remove it",
                   all_backups[0].name)
         return
@@ -186,7 +186,7 @@ def cleanup_old_backups(
 
 def process_backed_entry(backup_dir: str, entry_relpath: str, action: fs.Actions):
     _lg.debug("%s %s", action, entry_relpath)
-    if action is not fs.Actions.delete:
+    if action is not fs.Actions.DELETE:
         fs.nest_hardlink(src_dir=backup_dir, src_relpath=entry_relpath,
                          dst_dir=os.path.join(backup_dir, DELTA_DIR))
 

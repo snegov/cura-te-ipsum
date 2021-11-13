@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="cura-te-ipsum",
-    version="0.0.1.dev6",
+    version="0.0.1.dev7",
     author="Maks Snegov",
     author_email="snegov@spqr.link",
     description="Backup utility",
