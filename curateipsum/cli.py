@@ -8,8 +8,9 @@ import sys
 import time
 
 from curateipsum import backup
+from curateipsum._version import version
 
-_lg = logging.getLogger("spqr.curateipsum")
+_lg = logging.getLogger("curateipsum")
 SUPPORTED_PLATFORMS = ("linux", "darwin")
 
 
@@ -21,7 +22,9 @@ def main():
     parser = argparse.ArgumentParser(
         prog="cura-te-ipsum", description="cura-te-ipsum, my personal backup software.",
     )
-    parser.add_argument("-V", "--version", action="version", version="%(prog)s 0.0.1")
+    parser.add_argument("-V", "--version",
+                        action="version",
+                        version=f"%(prog)s {version}")
     parser.add_argument("-v", "--verbose",
                         action="store_true",
                         default=False,

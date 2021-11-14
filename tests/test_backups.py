@@ -5,8 +5,7 @@ import tempfile
 from unittest import TestCase, mock
 from datetime import datetime
 
-import curateipsum.backup as bk
-import curateipsum.fs as fs
+from curateipsum import backup as bk, fs
 
 
 class TestBackupCleanup(TestCase):
