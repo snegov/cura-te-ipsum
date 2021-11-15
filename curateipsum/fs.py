@@ -13,6 +13,10 @@ from typing import Iterable, Tuple
 _lg = logging.getLogger(__name__)
 
 
+class BackupCreationError(Exception):
+    pass
+
+
 class Actions(enum.Enum):
     NOTHING = enum.auto()
     DELETE = enum.auto()
@@ -21,6 +25,7 @@ class Actions(enum.Enum):
     UPDATE_PERM = enum.auto()
     UPDATE_OWNER = enum.auto()
     CREATE = enum.auto()
+    ERROR = enum.auto()
 
 
 class PseudoDirEntry:
@@ -44,11 +49,11 @@ class PseudoDirEntry:
         return self._stat
 
 
-def _parse_rsync_output(line: str) -> Tuple[str, Actions]:
+def _parse_rsync_output(line: str) -> Tuple[str, Actions, str]:
     action = None
     change_string, relpath = line.split(' ', maxsplit=1)
     if change_string == "*deleting":
-        return relpath, Actions.DELETE
+        return relpath, Actions.DELETE, ""
 
     update_type = change_string[0]
     entity_type = change_string[1]
@@ -69,7 +74,7 @@ def _parse_rsync_output(line: str) -> Tuple[str, Actions]:
 
     if action is None:
         raise RuntimeError("Not parsed string: %s" % line)
-    return relpath, action
+    return relpath, action, ""
 
 
 def rsync_ext(src, dst, dry_run=False):
@@ -139,8 +144,7 @@ def rm_direntry(entry: os.DirEntry):
     """ Recursively delete DirEntry (dir, file or symlink). """
     if entry.is_file(follow_symlinks=False) or entry.is_symlink():
         os.unlink(entry.path)
-        return
-    if entry.is_dir(follow_symlinks=False):
+    elif entry.is_dir(follow_symlinks=False):
         with os.scandir(entry.path) as it:
             child_entry: os.DirEntry
             for child_entry in it:
@@ -161,15 +165,19 @@ def copy_file(src, dst):
     """ Copy file from src to dst. Faster than shutil.copy. """
     try:
         fin = os.open(src, READ_FLAGS)
-        stat = os.fstat(fin)
-        fout = os.open(dst, WRITE_FLAGS, stat.st_mode)
+        fstat = os.fstat(fin)
+        fout = os.open(dst, WRITE_FLAGS, fstat.st_mode)
         for x in iter(lambda: os.read(fin, BUFFER_SIZE), b""):
             os.write(fout, x)
     finally:
-        try: os.close(fout)
-        except: pass
-        try: os.close(fin)
-        except: pass
+        try:
+            os.close(fout)
+        except (OSError, UnboundLocalError):
+            pass
+        try:
+            os.close(fin)
+        except (OSError, UnboundLocalError):
+            pass
 
 
 def copy_entity(src_path: str, dst_path: str):
@@ -205,6 +213,7 @@ def copy_entity(src_path: str, dst_path: str):
 
 def copy_direntry(entry: os.DirEntry, dst_path):
     """ Non-recursive DirEntry (file, dir or symlink) copy. """
+    src_stat = entry.stat(follow_symlinks=False)
     if entry.is_dir():
         os.mkdir(dst_path)
 
@@ -215,7 +224,6 @@ def copy_direntry(entry: os.DirEntry, dst_path):
     else:
         copy_file(entry.path, dst_path)
 
-    src_stat = entry.stat(follow_symlinks=False)
     if entry.is_symlink():
         # change symlink attributes only if supported by OS
         if os.chown in os.supports_follow_symlinks:
@@ -256,12 +264,14 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
     dst_root_abs = os.path.abspath(dst_dir)
 
     if not os.path.isdir(src_root_abs):
-        raise RuntimeError("Error during reading source directory: %s"
-                           % src_root_abs)
+        raise BackupCreationError(
+            "Error during reading source directory: %s" % src_root_abs
+        )
     if os.path.exists(dst_root_abs):
         if not os.path.isdir(dst_root_abs):
-            raise RuntimeError("Destination path is not a directory: %s"
-                               % dst_root_abs)
+            raise BackupCreationError(
+                "Destination path is not a directory: %s" % dst_root_abs
+            )
     else:
         os.mkdir(dst_root_abs)
 
@@ -279,9 +289,12 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
         # remove dst entries not existing in source
         if src_entry is None:
             _lg.debug("Rsync, deleting: %s", rel_path)
-            rm_direntry(dst_entry)
-            yield rel_path, Actions.DELETE
-            continue
+            try:
+                rm_direntry(dst_entry)
+                yield rel_path, Actions.DELETE, ""
+                continue
+            except OSError as exc:
+                raise BackupCreationError(exc) from exc
 
         # mark src entry as taken for processing
         del src_files_map[rel_path]
@@ -292,29 +305,43 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
             if not dst_entry.is_file(follow_symlinks=False):
                 _lg.debug("Rsync, rewriting (src is a file, dst is not a file): %s",
                           rel_path)
-                update_direntry(src_entry, dst_entry)
-                yield rel_path, Actions.REWRITE
+                try:
+                    update_direntry(src_entry, dst_entry)
+                    yield rel_path, Actions.REWRITE, ""
+                except OSError as exc:
+                    yield rel_path, Actions.ERROR, str(exc)
                 continue
+
         if src_entry.is_dir(follow_symlinks=False):
             if not dst_entry.is_dir(follow_symlinks=False):
                 _lg.debug("Rsync, rewriting (src is a dir, dst is not a dir): %s",
                           rel_path)
-                update_direntry(src_entry, dst_entry)
-                yield rel_path, Actions.REWRITE
+                try:
+                    update_direntry(src_entry, dst_entry)
+                    yield rel_path, Actions.REWRITE, ""
+                except OSError as exc:
+                    yield rel_path, Actions.ERROR, str(exc)
                 continue
+
         if src_entry.is_symlink():
             if not dst_entry.is_symlink():
                 _lg.debug("Rsync, rewriting (src is a symlink, dst is not a symlink): %s",
                           rel_path)
-                update_direntry(src_entry, dst_entry)
-                yield rel_path, Actions.REWRITE
+                try:
+                    update_direntry(src_entry, dst_entry)
+                    yield rel_path, Actions.REWRITE, ""
+                except OSError as exc:
+                    yield rel_path, Actions.ERROR, str(exc)
                 continue
 
         # rewrite dst if it is hard link to src (bad for backups)
         if src_entry.inode() == dst_entry.inode():
             _lg.debug("Rsync, rewriting (different inodes): %s", rel_path)
-            update_direntry(src_entry, dst_entry)
-            yield rel_path, Actions.REWRITE
+            try:
+                update_direntry(src_entry, dst_entry)
+                yield rel_path, Actions.REWRITE, ""
+            except OSError as exc:
+                yield rel_path, Actions.ERROR, str(exc)
             continue
 
         src_stat = src_entry.stat(follow_symlinks=False)
@@ -327,34 +354,44 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
             if not (same_size and same_mtime):
                 reason = "size" if not same_size else "time"
                 _lg.debug("Rsync, rewriting (different %s): %s", reason, rel_path)
-                update_direntry(src_entry, dst_entry)
-                yield rel_path, Actions.REWRITE
+                try:
+                    update_direntry(src_entry, dst_entry)
+                    yield rel_path, Actions.REWRITE, ""
+                except OSError as exc:
+                    yield rel_path, Actions.ERROR, str(exc)
                 continue
 
         # rewrite dst symlink if it points somewhere else than src
         if src_entry.is_symlink():
             if os.readlink(src_entry.path) != os.readlink(dst_entry.path):
                 _lg.debug("Rsync, rewriting (different symlink target): %s", rel_path)
-                update_direntry(src_entry, dst_entry)
+                try:
+                    update_direntry(src_entry, dst_entry)
+                    yield rel_path, Actions.REWRITE, ""
+                except OSError as exc:
+                    yield rel_path, Actions.ERROR, str(exc)
                 continue
 
         # update permissions and ownership
         if src_stat.st_mode != dst_stat.st_mode:
             _lg.debug("Rsync, updating permissions: %s", rel_path)
-            yield rel_path, Actions.UPDATE_PERM
             os.chmod(dst_entry.path, dst_stat.st_mode)
+            yield rel_path, Actions.UPDATE_PERM, ""
 
         if src_stat.st_uid != dst_stat.st_uid or src_stat.st_gid != dst_stat.st_gid:
             _lg.debug("Rsync, updating owners: %s", rel_path)
-            yield rel_path, Actions.UPDATE_OWNER
             os.chown(dst_entry.path, src_stat.st_uid, src_stat.st_gid)
+            yield rel_path, Actions.UPDATE_OWNER, ""
 
     # process remained source entries
     for rel_path, src_entry in src_files_map.items():
         dst_path = os.path.join(dst_root_abs, rel_path)
         _lg.debug("Rsync, creating: %s", rel_path)
-        copy_direntry(src_entry, dst_path)
-        yield rel_path, Actions.CREATE
+        try:
+            copy_direntry(src_entry, dst_path)
+            yield rel_path, Actions.CREATE, ""
+        except OSError as exc:
+            yield rel_path, Actions.ERROR, str(exc)
 
     # restore dir mtimes in dst, updated by updating files
     for src_entry in scantree(src_root_abs, dir_first=True):

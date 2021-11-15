@@ -1,6 +1,7 @@
 import os
 import os.path
 import shutil
+import socket
 import string
 import tempfile
 import unittest
@@ -255,6 +256,16 @@ class TestRsync(CommonFSTestCase):
         all(fs.rsync(self.src_dir, self.dst_dir))
         assert os.path.lexists(dst_path)
         assert os.path.isdir(dst_path)
+
+    def test_src_is_socket(self):
+        src_spath = self.create_file(self.src_dir)
+        dst_spath = os.path.join(self.dst_dir, self.relpath(src_spath))
+        os.unlink(src_spath)
+        sock = socket.socket(socket.AF_UNIX)
+        sock.bind(src_spath)
+
+        all(fs.rsync(self.src_dir, self.dst_dir))
+        assert not os.path.lexists(dst_spath)
 
     def test_src_dst_same_inode(self):
         src_fpath = self.create_file(self.src_dir)

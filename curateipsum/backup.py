@@ -81,7 +81,6 @@ def cleanup_old_backups(
         keep_weekly: int = 52,
         keep_monthly: int = 12,
         keep_yearly: int = 5,
-        min_free_space: int = 0
 ):
     """
     Delete old backups. Never deletes the only backup.
@@ -93,7 +92,6 @@ def cleanup_old_backups(
     :param keep_monthly: the number of months (1 month = 30 days) of which
         one monthly backup must be kept.
     :param keep_yearly: the number of years of which one yearly backup must be kept.
-    :param min_free_space: not used right now
     :return:
     """
     all_backups = sorted(_iterate_backups(backup_dir),
@@ -184,9 +182,9 @@ def cleanup_old_backups(
             shutil.rmtree(backup.path)
 
 
-def process_backed_entry(backup_dir: str, entry_relpath: str, action: fs.Actions):
-    _lg.debug("%s %s", action, entry_relpath)
-    if action is not fs.Actions.DELETE:
+def process_backed_entry(backup_dir: str, entry_relpath: str, action: fs.Actions, msg: str):
+    _lg.debug("%s %s %s", action, entry_relpath, msg)
+    if action not in (fs.Actions.ERROR, fs.Actions.DELETE):
         fs.nest_hardlink(src_dir=backup_dir, src_relpath=entry_relpath,
                          dst_dir=os.path.join(backup_dir, DELTA_DIR))
 
@@ -233,14 +231,20 @@ def initiate_backup(sources,
         src_name = os.path.basename(src_abs)
         dst_abs = os.path.join(cur_backup.path, src_name)
         _lg.info("Backing up directory %s to %s backup", src_abs, cur_backup.name)
-        for entry_relpath, action in rsync_func(src_abs, dst_abs, dry_run=dry_run):
-            if latest_backup is not None:
-                process_backed_entry(
-                    backup_dir=cur_backup.path,
-                    entry_relpath=os.path.join(src_name, entry_relpath),
-                    action=action
-                )
-            backup_changed = True
+        try:
+            for entry_relpath, action, msg in rsync_func(src_abs, dst_abs, dry_run=dry_run):
+                if latest_backup is not None:
+                    process_backed_entry(
+                        backup_dir=cur_backup.path,
+                        entry_relpath=os.path.join(src_name, entry_relpath),
+                        action=action,
+                        msg=msg,
+                    )
+                backup_changed = True
+        except fs.BackupCreationError as err:
+            _lg.error("Error during backup creation: %s", err)
+            _lg.error("Failed to create backup %s, removing", cur_backup.name)
+            shutil.rmtree(cur_backup.path, ignore_errors=True)
 
     # do not create backup on dry-run
     if dry_run:
