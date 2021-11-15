@@ -24,7 +24,7 @@ def main():
     )
     parser.add_argument("-V", "--version",
                         action="version",
-                        version=f"%(prog)s {version}")
+                        version=f"%(prog)s v{version}")
     parser.add_argument("-v", "--verbose",
                         action="store_true",
                         default=False,
