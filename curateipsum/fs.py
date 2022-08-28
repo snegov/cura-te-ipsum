@@ -393,7 +393,7 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
     src_root_stat = os.lstat(src_root_abs)
     dst_root_stat = os.lstat(dst_root_abs)
     if src_root_stat.st_mtime != dst_root_stat.st_mtime:
-        _lg.debug("Rsync, restoring root directory mtime: %s", src_root_abs)
+        _lg.debug("Rsync, restoring root directory mtime: %s", dst_root_abs)
         os.utime(dst_root_abs,
                  (src_root_stat.st_atime, src_root_stat.st_mtime),
                  follow_symlinks=False)
