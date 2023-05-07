@@ -109,7 +109,8 @@ def main():
     backup.release_backups_lock(backups_dir_abs)
 
     end_time = time.time()
-    _lg.info("Finished, time spent: %s", str(timedelta(end_time - start_time)))
+    spent_time = end_time - start_time
+    _lg.info("Finished, time spent: %s", str(timedelta(seconds=spent_time)))
 
     return 0
 
