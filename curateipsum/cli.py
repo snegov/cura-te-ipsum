@@ -6,6 +6,7 @@ import os.path
 import shutil
 import sys
 import time
+from datetime import timedelta
 
 from curateipsum import backup
 from curateipsum._version import version
@@ -20,7 +21,8 @@ def main():
     console_handler.setFormatter(formatter)
 
     parser = argparse.ArgumentParser(
-        prog="cura-te-ipsum", description="cura-te-ipsum, my personal backup software.",
+        prog="cura-te-ipsum",
+        description="cura-te-ipsum, my personal backup software.",
     )
     parser.add_argument("-V", "--version",
                         action="version",
@@ -30,8 +32,8 @@ def main():
                         default=False,
                         help="print verbose information")
     parser.add_argument("-b",
-                        dest="backup_dir",
-                        metavar="BACKUP_DIR",
+                        dest="backups_dir",
+                        metavar="BACKUPS_DIR",
                         type=str,
                         required=True,
                         help="directory, where all backups will be stored")
@@ -78,9 +80,10 @@ def main():
                   cp_program)
         return 1
 
-    backup_dir_abs = os.path.abspath(args.backup_dir)
-    if not os.path.isdir(backup_dir_abs):
-        _lg.error("Backup directory %s does not exist, exiting", args.backup_dir)
+    backups_dir_abs = os.path.abspath(args.backups_dir)
+    if not os.path.isdir(backups_dir_abs):
+        _lg.error("Backup directory %s does not exist, exiting",
+                  args.backups_dir)
         return 1
 
     for src_dir in args.sources:
@@ -90,23 +93,23 @@ def main():
 
     start_time = time.time()
 
-    if not backup.set_backups_lock(backup_dir_abs, args.force):
-        _lg.warning("Previous backup is still in process, exiting")
+    if not backup.set_backups_lock(backups_dir_abs, args.force):
         return 1
 
-    backup.cleanup_old_backups(backup_dir=backup_dir_abs, dry_run=args.dry_run)
+    # TODO add cleaning up from non-finished backups
+    backup.cleanup_old_backups(backups_dir=backups_dir_abs,
+                               dry_run=args.dry_run)
     backup.initiate_backup(
         sources=args.sources,
-        backup_dir=backup_dir_abs,
+        backups_dir=backups_dir_abs,
         dry_run=args.dry_run,
         external_rsync=args.external_rsync,
         external_hardlink=args.external_hardlink,
     )
+    backup.release_backups_lock(backups_dir_abs)
 
-    backup.release_backups_lock(backup_dir_abs)
     end_time = time.time()
-    spent_time = end_time - start_time
-    _lg.info("Finished, time spent: %.3fs", spent_time)
+    _lg.info("Finished, time spent: %s", str(timedelta(end_time - start_time)))
 
     return 0
 

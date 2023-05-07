@@ -142,7 +142,8 @@ class TestHardlinkDir(CommonFSTestCase):
         nfile_relpath = self.relpath(src_nfile_path)
 
         fs.hardlink_dir(self.src_dir, self.dst_dir)
-        self.check_directory_stats(src_ndir_path, os.path.join(self.dst_dir, ndir_relpath))
+        self.check_directory_stats(src_ndir_path,
+                                   os.path.join(self.dst_dir, ndir_relpath))
 
         # check file in nested directory
         src_fstat = os.lstat(src_nfile_path)

@@ -1,24 +1,30 @@
 """
 Module with backup functions.
 """
-
+import errno
 import logging
 import os
 import shutil
+import signal
 from datetime import datetime, timedelta
-from typing import Optional, Iterable
+from typing import Optional, Iterable, Union
 
 from curateipsum import fs
 
 BACKUP_ENT_FMT = "%Y%m%d_%H%M%S"
 LOCK_FILE = ".backups_lock"
 DELTA_DIR = ".backup_delta"
+BACKUP_MARKER = ".backup_finished"
 _lg = logging.getLogger(__name__)
 
 
-def _is_backup_entity(backup_entry: os.DirEntry) -> bool:
-    """ Check if entity_path is a single backup dir. """
-    if not backup_entry.is_dir():
+def _is_backup(backup_entry: Union[os.DirEntry, fs.PseudoDirEntry]) -> bool:
+    """Guess if backup_entry is a real backup."""
+    # if there is no marker file in the backup dir, it's not a backup
+    if not os.path.exists(os.path.join(backup_entry.path, BACKUP_MARKER)):
+        return False
+    # if there is only a marker file in the backup dir, it's not a backup
+    if os.listdir(backup_entry.path) == [BACKUP_MARKER]:
         return False
     try:
         datetime.strptime(backup_entry.name, BACKUP_ENT_FMT)
@@ -27,74 +33,140 @@ def _is_backup_entity(backup_entry: os.DirEntry) -> bool:
         return False
 
 
-def _iterate_backups(backup_dir: str) -> Iterable[os.DirEntry]:
-    b_iter = os.scandir(backup_dir)
+def _iterate_backups(backups_dir: str) -> Iterable[os.DirEntry]:
+    """Iterate over backups in backups_dir."""
+    b_iter = os.scandir(backups_dir)
 
     b_ent: os.DirEntry
     for b_ent in b_iter:
-        if not _is_backup_entity(b_ent):
-            continue
-        if not os.listdir(b_ent.path):
-            _lg.info("Removing empty backup entity: %s", b_ent.name)
-            os.rmdir(b_ent.path)
+        if not _is_backup(b_ent):
             continue
         yield b_ent
 
     b_iter.close()
 
 
-def _get_latest_backup(backup_dir: str) -> Optional[os.DirEntry]:
-    """ Returns path to latest backup created in backup_dir or None. """
-    all_backups = sorted(_iterate_backups(backup_dir), key=lambda e: e.name)
+def _get_latest_backup(backups_dir: str) -> Optional[os.DirEntry]:
+    """Returns path to latest backup created in backups_dir or None."""
+    all_backups = sorted(_iterate_backups(backups_dir), key=lambda e: e.name)
     if all_backups:
         return all_backups[-1]
     return None
 
 
-def _date_from_backup(backup: os.DirEntry) -> datetime:
-    return datetime.strptime(backup.name, BACKUP_ENT_FMT)
+def _date_from_backup(backup_entry: os.DirEntry) -> datetime:
+    """Returns datetime object from backup name."""
+    return datetime.strptime(backup_entry.name, BACKUP_ENT_FMT)
 
 
-def set_backups_lock(backup_dir: str, force: bool = False) -> bool:
-    """ Return false if previous backup is still running. """
-    lock_file_path = os.path.join(backup_dir, LOCK_FILE)
-    if os.path.exists(lock_file_path):
-        if not force:
+def _pid_exists(pid: int) -> bool:
+    """Check whether pid exists in the current process table."""
+    if pid == 0:
+        # According to "man 2 kill" PID 0 has a special meaning:
+        # it refers to <<every process in the process group of the
+        # calling process>> so we don't want to go any further.
+        # If we get here it means this UNIX platform *does* have
+        # a process with id 0.
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError as err:
+        if err.errno == errno.ESRCH:
+            # ESRCH == No such process
             return False
-        os.unlink(lock_file_path)
+        elif err.errno == errno.EPERM:
+            # EPERM clearly means there's a process to deny access to
+            return True
+        else:
+            # According to "man 2 kill" possible error values are
+            # (EINVAL, EPERM, ESRCH) therefore we should never get
+            # here. If we do let's be explicit in considering this
+            # an error.
+            raise err
+    else:
+        return True
 
-    open(lock_file_path, "a").close()
+
+def set_backups_lock(backups_dir: str,
+                     force: bool = False) -> bool:
+    """
+    Set lock file to prevent multiple backups running at the same time.
+    Lock file contains PID of the process that created it.
+    Return false if previous backup is still running and force flag is not set.
+    """
+    lock_file_path = os.path.join(backups_dir, LOCK_FILE)
+
+    if not os.path.exists(lock_file_path):
+        with open(lock_file_path, "a") as f:
+            f.write(str(os.getpid()))
+        return True
+
+    with open(lock_file_path, "r") as f:
+        pid = int(f.read())
+
+    if _pid_exists(pid):
+        if not force:
+            _lg.warning(
+                "Previous backup is still in progress (PID: %d), exiting", pid
+            )
+            return False
+
+        _lg.warning(
+            "Previous backup is still in progress (PID: %d), "
+            "but force flag is set, continuing", pid
+        )
+        os.kill(pid, signal.SIGKILL)
+
+    os.unlink(lock_file_path)
     return True
 
 
-def release_backups_lock(backup_dir: str):
-    lock_file_path = os.path.join(backup_dir, LOCK_FILE)
+def release_backups_lock(backups_dir: str):
+    """Remove lock file."""
+    lock_file_path = os.path.join(backups_dir, LOCK_FILE)
     if os.path.exists(lock_file_path):
         os.unlink(lock_file_path)
 
 
-def cleanup_old_backups(
-        backup_dir: str,
-        dry_run: bool = False,
-        keep_all: int = 7,
-        keep_daily: int = 30,
-        keep_weekly: int = 52,
-        keep_monthly: int = 12,
-        keep_yearly: int = 5,
-):
+def set_backup_marker(backup_entry: Union[os.DirEntry, fs.PseudoDirEntry]):
+    """Create finished backup marker file in backup's directory."""
+    marker_path = os.path.join(backup_entry.path, BACKUP_MARKER)
+    if not os.path.exists(marker_path):
+        open(marker_path, "a").close()
+
+
+def cleanup_old_backups(backups_dir: str,
+                        dry_run: bool = False,
+                        keep_all: int = 7,
+                        keep_daily: int = 30,
+                        keep_weekly: int = 52,
+                        keep_monthly: int = 12,
+                        keep_yearly: int = 5):
     """
     Delete old backups. Never deletes the only backup.
-    :param backup_dir: full path to backup directory.
-    :param dry_run: don't do anything actually.
-    :param keep_all: the number of days that all backups must be kept.
-    :param keep_daily: the number of days that all daily backups must be kept.
-    :param keep_weekly: the number of weeks of which one weekly backup must be kept.
-    :param keep_monthly: the number of months (1 month = 30 days) of which
-        one monthly backup must be kept.
-    :param keep_yearly: the number of years of which one yearly backup must be kept.
-    :return:
+    For keep_* params threshold is inclusive, e.g.:
+    keep_weekly=1 being run on Thursday will keep one backup from this week and
+    one from the previous, even if the previous week's backup was created on
+    Monday.
+    keep_monthly=3 being run on any day of April will keep one backup from each
+    of months of January, February and March.
+
+    :param backups_dir: full path to backups directory.
+    :param dry_run: don't do anything.
+    :param keep_all:
+        up to this amount of days in the past all backups must be kept.
+    :param keep_daily:
+        up to this amount of days in the past one daily backup must be kept.
+    :param keep_weekly:
+        up to this amount of weeks in the past one weekly backup must be kept.
+    :param keep_monthly:
+        up to this amount of months in the past one monthly backup must be kept.
+        1 month is considered to be 30 days.
+    :param keep_yearly:
+        up to this amount of years in the past one yearly backup must be kept.
+        1 year is considered to be 365 days.
     """
-    all_backups = sorted(_iterate_backups(backup_dir),
+    all_backups = sorted(_iterate_backups(backups_dir),
                          key=lambda e: e.name, reverse=True)
     if dry_run:
         _lg.info("Dry-run, no backups will be actually removed")
@@ -177,12 +249,23 @@ def cleanup_old_backups(
         to_remove[backup] = True
 
     for backup, do_delete in to_remove.items():
-        if not dry_run and do_delete:
-            _lg.info("Removing old backup %s", backup.name)
-            shutil.rmtree(backup.path)
+        if do_delete:
+            if dry_run:
+                _lg.info("Would remove old backup %s", backup.name)
+            else:
+                _lg.info("Removing old backup %s", backup.name)
+                shutil.rmtree(backup.path)
 
 
-def process_backed_entry(backup_dir: str, entry_relpath: str, action: fs.Actions, msg: str):
+def process_backed_entry(backup_dir: str,
+                         entry_relpath: str,
+                         action: fs.Actions,
+                         msg: str):
+    """
+    Additional processing of backed up DirEntry (file/dir/symlink).
+    Actions:
+    - if DirEntry was not deleted, hardlink it to DELTA_DIR.
+    """
     _lg.debug("%s %s %s", action, entry_relpath, msg)
     if action not in (fs.Actions.ERROR, fs.Actions.DELETE):
         fs.nest_hardlink(src_dir=backup_dir, src_relpath=entry_relpath,
@@ -190,17 +273,26 @@ def process_backed_entry(backup_dir: str, entry_relpath: str, action: fs.Actions
 
 
 def initiate_backup(sources,
-                    backup_dir: str,
+                    backups_dir: str,
                     dry_run: bool = False,
                     external_rsync: bool = False,
                     external_hardlink: bool = False):
-    """ Main backup function """
+    """
+    Main backup function.
+    Creates a new backup directory, copies data from the latest backup,
+    and then syncs data from sources.
+    :param sources: list of directories to backup (relative paths ok)
+    :param backups_dir: directory where all backups are stored
+    :param dry_run: if True, no actual changes will be made
+    :param external_rsync: if True, use external rsync instead of python
+    :param external_hardlink: if True, use external hardlink instead of python
+    """
 
     start_time_fmt = datetime.now().strftime(BACKUP_ENT_FMT)
-    cur_backup = fs.PseudoDirEntry(os.path.join(backup_dir, start_time_fmt))
+    cur_backup = fs.PseudoDirEntry(os.path.join(backups_dir, start_time_fmt))
     _lg.debug("Current backup dir: %s", cur_backup.path)
 
-    latest_backup = _get_latest_backup(backup_dir)
+    latest_backup = _get_latest_backup(backups_dir)
 
     if latest_backup is None:
         _lg.info("Creating empty directory for current backup: %s",
@@ -215,13 +307,14 @@ def initiate_backup(sources,
                                  dst_dir=cur_backup.path,
                                  use_external=external_hardlink)
         if not hl_res:
-            _lg.error("Something went wrong during copying data from latest backup,"
-                      " removing created %s", cur_backup.name)
+            _lg.error("Something went wrong during copying data from latest"
+                      " backup, removing created %s", cur_backup.name)
             shutil.rmtree(cur_backup.path, ignore_errors=True)
             return
 
         # clean up delta dir from copied backup
-        shutil.rmtree(os.path.join(cur_backup.path, DELTA_DIR), ignore_errors=True)
+        shutil.rmtree(os.path.join(cur_backup.path, DELTA_DIR),
+                      ignore_errors=True)
 
     rsync_func = fs.rsync_ext if external_rsync else fs.rsync
 
@@ -230,9 +323,13 @@ def initiate_backup(sources,
         src_abs = os.path.abspath(src)
         src_name = os.path.basename(src_abs)
         dst_abs = os.path.join(cur_backup.path, src_name)
-        _lg.info("Backing up directory %s to %s backup", src_abs, cur_backup.name)
+        _lg.info("Backing up directory %s to backup %s",
+                 src_abs, cur_backup.name)
         try:
-            for entry_relpath, action, msg in rsync_func(src_abs, dst_abs, dry_run=dry_run):
+            for entry_relpath, action, msg in rsync_func(
+                    src_abs, dst_abs, dry_run=dry_run
+            ):
+                # TODO maybe should be run if first backup too?
                 if latest_backup is not None:
                     process_backed_entry(
                         backup_dir=cur_backup.path,
@@ -240,6 +337,7 @@ def initiate_backup(sources,
                         action=action,
                         msg=msg,
                     )
+                # raise flag if something was changed since last backup
                 backup_changed = True
         except fs.BackupCreationError as err:
             _lg.error("Error during backup creation: %s", err)
@@ -252,8 +350,9 @@ def initiate_backup(sources,
         shutil.rmtree(cur_backup.path, ignore_errors=True)
     # do not create backup if no change from previous one
     elif latest_backup is not None and not backup_changed:
-        _lg.info("Newly created backup %s is the same as previous one %s, removing",
+        _lg.info("Created backup %s is the same as previous one %s, removing",
                  cur_backup.name, latest_backup.name)
         shutil.rmtree(cur_backup.path, ignore_errors=True)
     else:
+        set_backup_marker(cur_backup)
         _lg.info("Backup created: %s", cur_backup.name)

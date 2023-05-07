@@ -90,8 +90,11 @@ def _parse_rsync_output(line: str) -> Tuple[str, Actions, str]:
     return relpath, action, ""
 
 
-def rsync_ext(src, dst, dry_run=False):
-    """Call external rsync command"""
+def rsync_ext(src, dst, dry_run=False) -> Iterable[Tuple[str, Actions, str]]:
+    """
+    Call external rsync command for syncing files from src to dst.
+    Yield (path, action, error message) tuples.
+    """
     rsync_args = ["rsync"]
     if dry_run:
         rsync_args.append("--dry-run")
@@ -139,7 +142,9 @@ def rsync_ext(src, dst, dry_run=False):
 
 
 def scantree(path, dir_first=True) -> Iterable[os.DirEntry]:
-    """Recursively yield DirEntry file objects for given directory."""
+    """
+    Recursively yield DirEntry objects (dir/file/symlink) for given directory.
+    """
     entry: os.DirEntry
     with os.scandir(path) as scan_it:
         for entry in scan_it:
@@ -154,7 +159,7 @@ def scantree(path, dir_first=True) -> Iterable[os.DirEntry]:
 
 
 def rm_direntry(entry: Union[os.DirEntry, PseudoDirEntry]):
-    """ Recursively delete DirEntry (dir, file or symlink). """
+    """ Recursively delete DirEntry (dir/file/symlink). """
     if entry.is_file(follow_symlinks=False) or entry.is_symlink():
         os.unlink(entry.path)
     elif entry.is_dir(follow_symlinks=False):
@@ -194,7 +199,7 @@ def copy_file(src, dst):
 
 
 def copy_direntry(entry: Union[os.DirEntry, PseudoDirEntry], dst_path):
-    """ Non-recursive DirEntry (file, dir or symlink) copy. """
+    """ Non-recursive DirEntry (file/dir/symlink) copy. """
     src_stat = entry.stat(follow_symlinks=False)
     if entry.is_dir():
         os.mkdir(dst_path)
@@ -232,13 +237,14 @@ def update_direntry(src_entry: os.DirEntry, dst_entry: os.DirEntry):
     copy_direntry(src_entry, dst_entry.path)
 
 
-def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
+def rsync(src_dir,
+          dst_dir,
+          dry_run=False) -> Iterable[Tuple[str, Actions, str]]:
     """
-    Do sync
-    :param src_dir: source dir
-    :param dst_dir: dest dir, create if not exists
-    :param dry_run: not used
-    :return: nothing
+    Sync files/dirs/symlinks from src_dir to dst_dir.
+    Yield (path, action, error message) tuples.
+    Entries in dst_dir will be removed if not present in src_dir.
+    Analog of 'rsync --delete -irltpog'.
     """
 
     _lg.debug("Rsync: %s -> %s", src_dir, dst_dir)
@@ -282,10 +288,11 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
         del src_files_map[rel_path]
 
         src_entry: os.DirEntry
-        # rewrite dst if it has different than src type
+        # rewrite dst if it has different type from src
         if src_entry.is_file(follow_symlinks=False):
             if not dst_entry.is_file(follow_symlinks=False):
-                _lg.debug("Rsync, rewriting (src is a file, dst is not a file): %s",
+                _lg.debug("Rsync, rewriting"
+                          " (src is a file, dst is not a file): %s",
                           rel_path)
                 try:
                     update_direntry(src_entry, dst_entry)
@@ -296,7 +303,8 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
 
         if src_entry.is_dir(follow_symlinks=False):
             if not dst_entry.is_dir(follow_symlinks=False):
-                _lg.debug("Rsync, rewriting (src is a dir, dst is not a dir): %s",
+                _lg.debug("Rsync, rewriting"
+                          " (src is a dir, dst is not a dir): %s",
                           rel_path)
                 try:
                     update_direntry(src_entry, dst_entry)
@@ -307,7 +315,8 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
 
         if src_entry.is_symlink():
             if not dst_entry.is_symlink():
-                _lg.debug("Rsync, rewriting (src is a symlink, dst is not a symlink): %s",
+                _lg.debug("Rsync, rewriting"
+                          " (src is a symlink, dst is not a symlink): %s",
                           rel_path)
                 try:
                     update_direntry(src_entry, dst_entry)
@@ -329,13 +338,14 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
         src_stat = src_entry.stat(follow_symlinks=False)
         dst_stat = dst_entry.stat(follow_symlinks=False)
 
-        # rewrite dst file/symlink which have different with src size or mtime
+        # rewrite dst file/symlink which have different size or mtime than src
         if src_entry.is_file(follow_symlinks=False):
             same_size = src_stat.st_size == dst_stat.st_size
             same_mtime = src_stat.st_mtime == dst_stat.st_mtime
             if not (same_size and same_mtime):
                 reason = "size" if not same_size else "time"
-                _lg.debug("Rsync, rewriting (different %s): %s", reason, rel_path)
+                _lg.debug("Rsync, rewriting (different %s): %s",
+                          reason, rel_path)
                 try:
                     update_direntry(src_entry, dst_entry)
                     yield rel_path, Actions.REWRITE, ""
@@ -346,7 +356,8 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
         # rewrite dst symlink if it points somewhere else than src
         if src_entry.is_symlink():
             if os.readlink(src_entry.path) != os.readlink(dst_entry.path):
-                _lg.debug("Rsync, rewriting (different symlink target): %s", rel_path)
+                _lg.debug("Rsync, rewriting (different symlink target): %s",
+                          rel_path)
                 try:
                     update_direntry(src_entry, dst_entry)
                     yield rel_path, Actions.REWRITE, ""
@@ -360,12 +371,13 @@ def rsync(src_dir, dst_dir, dry_run=False) -> Iterable[tuple]:
             os.chmod(dst_entry.path, dst_stat.st_mode)
             yield rel_path, Actions.UPDATE_PERM, ""
 
-        if src_stat.st_uid != dst_stat.st_uid or src_stat.st_gid != dst_stat.st_gid:
+        if (src_stat.st_uid != dst_stat.st_uid
+                or src_stat.st_gid != dst_stat.st_gid):
             _lg.debug("Rsync, updating owners: %s", rel_path)
             os.chown(dst_entry.path, src_stat.st_uid, src_stat.st_gid)
             yield rel_path, Actions.UPDATE_OWNER, ""
 
-    # process remained source entries
+    # process remained source entries (new files/dirs/symlinks)
     for rel_path, src_entry in src_files_map.items():
         dst_path = os.path.join(dst_root_abs, rel_path)
         _lg.debug("Rsync, creating: %s", rel_path)
@@ -429,7 +441,7 @@ def _recursive_hardlink(src: str, dst: str) -> bool:
     Both src and dst directories should exist.
     :param src: absolute path to source directory.
     :param dst: absolute path to target directory.
-    :return: None
+    :return: True if success, False otherwise.
     """
     with os.scandir(src) as it:
         ent: os.DirEntry
@@ -467,7 +479,7 @@ def hardlink_dir(src_dir, dst_dir, use_external: bool = False) -> bool:
     :param src_dir: path to source directory
     :param dst_dir: path to target directory
     :param use_external: whether to use external cp -al command
-    :return: success or not
+    :return: True if success, False otherwise.
     """
     _lg.debug("Recursive hardlinking: %s -> %s", src_dir, dst_dir)
     src_abs = os.path.abspath(src_dir)
@@ -480,15 +492,18 @@ def hardlink_dir(src_dir, dst_dir, use_external: bool = False) -> bool:
     _lg.debug("Hardlink, creating directory: %s", dst_abs)
     os.mkdir(dst_abs)
 
-    hardlink_func = _recursive_hardlink_ext if use_external else _recursive_hardlink
+    hardlink_func = (_recursive_hardlink_ext if use_external
+                     else _recursive_hardlink)
     return hardlink_func(src_abs, dst_abs)
 
 
 def nest_hardlink(src_dir: str, src_relpath: str, dst_dir: str):
     """
-    Hardlink entity from (src_dir + src_relpath) to dst_dir preserving dir structure.
+    Hardlink entity from (src_dir + src_relpath) to dst_dir preserving dir
+    structure of src_relpath.
     """
-    _lg.debug("Nested hardlinking: %s%s%s -> %s", src_dir, os.path.sep, src_relpath, dst_dir)
+    _lg.debug("Nested hardlinking: %s%s%s -> %s",
+              src_dir, os.path.sep, src_relpath, dst_dir)
     src_dir_abs = os.path.abspath(src_dir)
     src_full_path = os.path.join(src_dir_abs, src_relpath)
     dst_dir_abs = os.path.abspath(dst_dir)
