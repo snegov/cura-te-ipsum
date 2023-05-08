@@ -18,13 +18,23 @@ BACKUP_MARKER = ".backup_finished"
 _lg = logging.getLogger(__name__)
 
 
+def _get_backup_marker(
+        backup_entry: Union[os.DirEntry, fs.PseudoDirEntry]
+) -> fs.PseudoDirEntry:
+    """Return DirEntry for marker file of given backup."""
+    marker_name = "%s_%s" % (BACKUP_MARKER, backup_entry.name)
+    marker_path = os.path.join(backup_entry.path, marker_name)
+    return fs.PseudoDirEntry(path=marker_path)
+
+
 def _is_backup(backup_entry: Union[os.DirEntry, fs.PseudoDirEntry]) -> bool:
     """Guess if backup_entry is a real backup."""
+    backup_marker = _get_backup_marker(backup_entry)
     # if there is no marker file in the backup dir, it's not a backup
-    if not os.path.exists(os.path.join(backup_entry.path, BACKUP_MARKER)):
+    if not os.path.exists(backup_marker.path):
         return False
     # if there is only a marker file in the backup dir, it's not a backup
-    if os.listdir(backup_entry.path) == [BACKUP_MARKER]:
+    if os.listdir(backup_entry.path) == [backup_marker.name]:
         return False
     try:
         datetime.strptime(backup_entry.name, BACKUP_ENT_FMT)
@@ -130,9 +140,9 @@ def release_backups_lock(backups_dir: str):
 
 def set_backup_marker(backup_entry: Union[os.DirEntry, fs.PseudoDirEntry]):
     """Create finished backup marker file in backup's directory."""
-    marker_path = os.path.join(backup_entry.path, BACKUP_MARKER)
-    if not os.path.exists(marker_path):
-        open(marker_path, "a").close()
+    backup_marker = _get_backup_marker(backup_entry)
+    if not os.path.exists(backup_marker.path):
+        open(backup_marker.path, "a").close()
 
 
 def cleanup_old_backups(backups_dir: str,
@@ -311,6 +321,11 @@ def initiate_backup(sources,
                       " backup, removing created %s", cur_backup.name)
             shutil.rmtree(cur_backup.path, ignore_errors=True)
             return
+
+        # remove backup markers from copied backup
+        for fname in os.listdir(cur_backup.path):
+            if fname.startswith(BACKUP_MARKER):
+                os.remove(os.path.join(cur_backup.path, fname))
 
         # clean up delta dir from copied backup
         shutil.rmtree(os.path.join(cur_backup.path, DELTA_DIR),
