@@ -214,15 +214,21 @@ def copy_direntry(entry: Union[os.DirEntry, PseudoDirEntry], dst_path):
     if entry.is_symlink():
         # change symlink attributes only if supported by OS
         if os.chown in os.supports_follow_symlinks:
-            os.chown(dst_path, src_stat.st_uid, src_stat.st_gid,
-                     follow_symlinks=False)
+            try:
+                os.chown(dst_path, src_stat.st_uid, src_stat.st_gid,
+                         follow_symlinks=False)
+            except PermissionError:
+                _lg.debug("Cannot change ownership (not root): %s", dst_path)
         if os.chmod in os.supports_follow_symlinks:
             os.chmod(dst_path, src_stat.st_mode, follow_symlinks=False)
         if os.utime in os.supports_follow_symlinks:
             os.utime(dst_path, (src_stat.st_atime, src_stat.st_mtime),
                      follow_symlinks=False)
     else:
-        os.chown(dst_path, src_stat.st_uid, src_stat.st_gid)
+        try:
+            os.chown(dst_path, src_stat.st_uid, src_stat.st_gid)
+        except PermissionError:
+            _lg.debug("Cannot change ownership (not root): %s", dst_path)
         os.chmod(dst_path, src_stat.st_mode)
         os.utime(dst_path, (src_stat.st_atime, src_stat.st_mtime))
 
@@ -368,14 +374,17 @@ def rsync(src_dir,
         # update permissions and ownership
         if src_stat.st_mode != dst_stat.st_mode:
             _lg.debug("Rsync, updating permissions: %s", rel_path)
-            os.chmod(dst_entry.path, dst_stat.st_mode)
+            os.chmod(dst_entry.path, src_stat.st_mode)
             yield rel_path, Actions.UPDATE_PERM, ""
 
         if (src_stat.st_uid != dst_stat.st_uid
                 or src_stat.st_gid != dst_stat.st_gid):
             _lg.debug("Rsync, updating owners: %s", rel_path)
-            os.chown(dst_entry.path, src_stat.st_uid, src_stat.st_gid)
-            yield rel_path, Actions.UPDATE_OWNER, ""
+            try:
+                os.chown(dst_entry.path, src_stat.st_uid, src_stat.st_gid)
+                yield rel_path, Actions.UPDATE_OWNER, ""
+            except PermissionError:
+                _lg.debug("Cannot change ownership (not root): %s", rel_path)
 
     # process remained source entries (new files/dirs/symlinks)
     for rel_path, src_entry in src_files_map.items():
@@ -457,7 +466,10 @@ def _recursive_hardlink(src: str, dst: str) -> bool:
 
                 # save directory's metainfo
                 ent_stat = ent.stat(follow_symlinks=False)
-                os.chown(ent_dst_path, ent_stat.st_uid, ent_stat.st_gid)
+                try:
+                    os.chown(ent_dst_path, ent_stat.st_uid, ent_stat.st_gid)
+                except PermissionError:
+                    _lg.debug("Cannot change ownership (not root): %s", ent_dst_path)
                 os.chmod(ent_dst_path, ent_stat.st_mode)
                 os.utime(ent_dst_path, (ent_stat.st_atime, ent_stat.st_mtime))
 

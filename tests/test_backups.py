@@ -225,5 +225,108 @@ class TestBackupCleanup(TestCase):
         self._check_backups(backups)
 
 
+class TestBackupLock(TestCase):
+    """Test suite for backup lock file functionality."""
+
+    def setUp(self) -> None:
+        self.backup_dir = tempfile.TemporaryDirectory(prefix="backup_lock_")
+
+    def tearDown(self) -> None:
+        self.backup_dir.cleanup()
+
+    def test_lock_creation(self):
+        """Test that lock file is created with current PID"""
+        result = bk.set_backups_lock(self.backup_dir.name)
+        self.assertTrue(result)
+
+        lock_path = os.path.join(self.backup_dir.name, bk.LOCK_FILE)
+        self.assertTrue(os.path.exists(lock_path))
+
+        with open(lock_path, "r") as f:
+            pid = int(f.read().strip())
+        self.assertEqual(pid, os.getpid())
+
+    def test_lock_prevents_concurrent_backup(self):
+        """Test that second lock acquisition is blocked"""
+        # First lock should succeed
+        result1 = bk.set_backups_lock(self.backup_dir.name)
+        self.assertTrue(result1)
+
+        # Second lock should fail (same process trying to lock again)
+        # Write a different PID to simulate another process
+        lock_path = os.path.join(self.backup_dir.name, bk.LOCK_FILE)
+        with open(lock_path, "w") as f:
+            f.write(str(os.getpid()))
+
+        result2 = bk.set_backups_lock(self.backup_dir.name, force=False)
+        self.assertFalse(result2)
+
+    def test_stale_lock_is_removed(self):
+        """Test that lock from non-existent process is cleaned up"""
+        lock_path = os.path.join(self.backup_dir.name, bk.LOCK_FILE)
+
+        # Create lock with non-existent PID
+        with open(lock_path, "w") as f:
+            f.write("999999")
+
+        # Lock should succeed by removing stale lock
+        result = bk.set_backups_lock(self.backup_dir.name)
+        self.assertTrue(result)
+
+        # Verify new lock has current PID
+        with open(lock_path, "r") as f:
+            pid = int(f.read().strip())
+        self.assertEqual(pid, os.getpid())
+
+    def test_corrupted_lock_is_handled(self):
+        """Test that corrupted lock file is handled gracefully"""
+        lock_path = os.path.join(self.backup_dir.name, bk.LOCK_FILE)
+
+        # Create corrupted lock file (non-numeric content)
+        with open(lock_path, "w") as f:
+            f.write("not a number")
+
+        # Lock should succeed by removing corrupted lock
+        result = bk.set_backups_lock(self.backup_dir.name)
+        self.assertTrue(result)
+
+        # Verify new lock has current PID
+        with open(lock_path, "r") as f:
+            pid = int(f.read().strip())
+        self.assertEqual(pid, os.getpid())
+
+    def test_empty_lock_is_handled(self):
+        """Test that empty lock file is handled gracefully"""
+        lock_path = os.path.join(self.backup_dir.name, bk.LOCK_FILE)
+
+        # Create empty lock file
+        open(lock_path, "w").close()
+
+        # Lock should succeed by removing empty lock
+        result = bk.set_backups_lock(self.backup_dir.name)
+        self.assertTrue(result)
+
+        # Verify new lock has current PID
+        with open(lock_path, "r") as f:
+            pid = int(f.read().strip())
+        self.assertEqual(pid, os.getpid())
+
+    def test_lock_release(self):
+        """Test that lock file is properly released"""
+        bk.set_backups_lock(self.backup_dir.name)
+        lock_path = os.path.join(self.backup_dir.name, bk.LOCK_FILE)
+        self.assertTrue(os.path.exists(lock_path))
+
+        bk.release_backups_lock(self.backup_dir.name)
+        self.assertFalse(os.path.exists(lock_path))
+
+    def test_release_nonexistent_lock(self):
+        """Test that releasing non-existent lock doesn't raise error"""
+        # Should not raise any exception
+        bk.release_backups_lock(self.backup_dir.name)
+
+        lock_path = os.path.join(self.backup_dir.name, bk.LOCK_FILE)
+        self.assertFalse(os.path.exists(lock_path))
+
+
 # TODO add tests for iterating over backups (marker, dirname)
-# TODO add tests for backups dir lockfile

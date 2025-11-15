@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import signal
+import time
 from datetime import datetime, timedelta
 from typing import Optional, Iterable, Union
 
@@ -106,13 +107,30 @@ def set_backups_lock(backups_dir: str,
     """
     lock_file_path = os.path.join(backups_dir, LOCK_FILE)
 
-    if not os.path.exists(lock_file_path):
-        with open(lock_file_path, "a") as f:
-            f.write(str(os.getpid()))
+    # Try to create lock file atomically
+    try:
+        fd = os.open(lock_file_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
         return True
+    except FileExistsError:
+        # Lock file already exists, check if process is still running
+        pass
 
-    with open(lock_file_path, "r") as f:
-        pid = int(f.read())
+    # Read existing lock file
+    try:
+        with open(lock_file_path, "r") as f:
+            content = f.read().strip()
+            if not content:
+                raise ValueError("Lock file is empty")
+            pid = int(content)
+    except (ValueError, IOError) as e:
+        _lg.warning("Corrupted lock file (%s), removing and retrying", e)
+        try:
+            os.unlink(lock_file_path)
+        except OSError:
+            pass
+        return set_backups_lock(backups_dir, force)
 
     if _pid_exists(pid):
         if not force:
@@ -123,12 +141,31 @@ def set_backups_lock(backups_dir: str,
 
         _lg.warning(
             "Previous backup is still in progress (PID: %d), "
-            "but force flag is set, continuing", pid
+            "but force flag is set, attempting graceful termination", pid
         )
-        os.kill(pid, signal.SIGKILL)
+        # Try SIGTERM first for graceful shutdown
+        try:
+            os.kill(pid, signal.SIGTERM)
+            _lg.info("Sent SIGTERM to process %d, waiting 5 seconds", pid)
+            time.sleep(5)
 
-    os.unlink(lock_file_path)
-    return True
+            # Check if process is still running
+            if _pid_exists(pid):
+                _lg.warning("Process %d did not terminate, sending SIGKILL", pid)
+                os.kill(pid, signal.SIGKILL)
+                time.sleep(1)  # Brief wait for SIGKILL to take effect
+        except OSError as e:
+            _lg.error("Failed to kill process %d: %s", pid, e)
+            return False
+
+    # Remove stale lock file and retry
+    try:
+        os.unlink(lock_file_path)
+    except OSError as e:
+        _lg.error("Failed to remove lock file: %s", e)
+        return False
+
+    return set_backups_lock(backups_dir, force)
 
 
 def release_backups_lock(backups_dir: str):
