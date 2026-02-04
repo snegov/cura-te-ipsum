@@ -181,6 +181,8 @@ BUFFER_SIZE = 128 * 1024
 
 def copy_file(src, dst):
     """ Copy file from src to dst. Faster than shutil.copy. """
+    fin = None
+    fout = None
     try:
         fin = os.open(src, READ_FLAGS)
         fstat = os.fstat(fin)
@@ -188,14 +190,16 @@ def copy_file(src, dst):
         for x in iter(lambda: os.read(fin, BUFFER_SIZE), b""):
             os.write(fout, x)
     finally:
-        try:
-            os.close(fout)
-        except (OSError, UnboundLocalError):
-            pass
-        try:
-            os.close(fin)
-        except (OSError, UnboundLocalError):
-            pass
+        if fout is not None:
+            try:
+                os.close(fout)
+            except OSError:
+                pass
+        if fin is not None:
+            try:
+                os.close(fin)
+            except OSError:
+                pass
 
 
 def copy_direntry(entry: Union[os.DirEntry, PseudoDirEntry], dst_path):
