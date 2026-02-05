@@ -770,3 +770,92 @@ class TestPermissionErrors:
         except PermissionError:
             pytest.fail("nest_hardlink crashed with PermissionError. "
                        "Should handle gracefully and log error.")
+
+
+class TestParseRsyncOutput:
+    """Test _parse_rsync_output() parsing of rsync --itemize-changes."""
+
+    def test_delete_file(self):
+        """Parse deletion output."""
+        result = fs._parse_rsync_output("*deleting path/to/file.txt")
+        assert result == ("path/to/file.txt", fs.Actions.DELETE, "")
+
+    def test_delete_nested_path(self):
+        """Parse deletion with nested directory structure."""
+        result = fs._parse_rsync_output("*deleting deeply/nested/dir/file.md")
+        assert result == ("deeply/nested/dir/file.md", fs.Actions.DELETE, "")
+
+    def test_create_file(self):
+        """Parse file creation."""
+        result = fs._parse_rsync_output(">f+++++++++ new_file.txt")
+        assert result == ("new_file.txt", fs.Actions.CREATE, "")
+
+    def test_create_file_nested(self):
+        """Parse file creation in subdirectory."""
+        result = fs._parse_rsync_output(">f+++++++++ subdir/another.log")
+        assert result == ("subdir/another.log", fs.Actions.CREATE, "")
+
+    def test_create_directory(self):
+        """Parse directory creation."""
+        result = fs._parse_rsync_output("cd+++++++++ new_directory/")
+        assert result == ("new_directory/", fs.Actions.CREATE, "")
+
+    def test_create_symlink(self):
+        """Parse symlink creation."""
+        result = fs._parse_rsync_output("cL+++++++++ link_to_file")
+        assert result == ("link_to_file", fs.Actions.CREATE, "")
+
+    def test_rewrite_file_size_change(self):
+        """Parse file rewrite due to size change."""
+        result = fs._parse_rsync_output(">f.s...... modified_file.txt")
+        assert result == ("modified_file.txt", fs.Actions.REWRITE, "")
+
+    def test_rewrite_file_time_change(self):
+        """Parse file rewrite due to time change."""
+        result = fs._parse_rsync_output(">f..t...... touched_file.dat")
+        assert result == ("touched_file.dat", fs.Actions.REWRITE, "")
+
+    def test_rewrite_file_size_and_time(self):
+        """Parse file rewrite due to both size and time change."""
+        result = fs._parse_rsync_output(">f.st...... changed.bin")
+        assert result == ("changed.bin", fs.Actions.REWRITE, "")
+
+    def test_update_directory_time(self):
+        """Parse directory time update."""
+        result = fs._parse_rsync_output(">d..t...... some_dir/")
+        assert result == ("some_dir/", fs.Actions.UPDATE_TIME, "")
+
+    def test_update_permissions(self):
+        """Parse permission change."""
+        result = fs._parse_rsync_output(">f....p.... executable.sh")
+        assert result == ("executable.sh", fs.Actions.UPDATE_PERM, "")
+
+    def test_update_permissions_with_time_change(self):
+        """Time change takes precedence over permission change."""
+        result = fs._parse_rsync_output(">f...tp.... script.py")
+        assert result == ("script.py", fs.Actions.REWRITE, "")
+
+    def test_update_owner(self):
+        """Parse owner change."""
+        result = fs._parse_rsync_output(">f.....o... owned_file.txt")
+        assert result == ("owned_file.txt", fs.Actions.UPDATE_OWNER, "")
+
+    def test_update_group(self):
+        """Parse group change."""
+        result = fs._parse_rsync_output(">f......g.. grouped_file.txt")
+        assert result == ("grouped_file.txt", fs.Actions.UPDATE_OWNER, "")
+
+    def test_update_owner_and_group(self):
+        """Parse both owner and group change."""
+        result = fs._parse_rsync_output(">f.....og.. shared_file.txt")
+        assert result == ("shared_file.txt", fs.Actions.UPDATE_OWNER, "")
+
+    def test_invalid_format_raises_error(self):
+        """Unparseable line should raise RuntimeError."""
+        with pytest.raises(RuntimeError, match="Not parsed string"):
+            fs._parse_rsync_output(">f......... unknown.txt")
+
+    def test_empty_change_string_raises_error(self):
+        """Empty change indicators should raise RuntimeError."""
+        with pytest.raises(RuntimeError, match="Not parsed string"):
+            fs._parse_rsync_output(">f......... no_action.txt")
