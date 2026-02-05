@@ -175,6 +175,85 @@ class TestRsync:
         assert os.path.lexists(dst_fpath)
         check_identical_file(src_fpath, dst_fpath)
 
+    def test_broken_symlink_in_source(self, common_fs_dirs):
+        """Test that rsync copies broken symlinks correctly."""
+        src_dir, dst_dir = common_fs_dirs
+        src_lpath = os.path.join(str(src_dir), 'broken_link')
+        # create symlink pointing to non-existent target
+        os.symlink('/nonexistent/target/file.txt', src_lpath)
+        dst_lpath = os.path.join(str(dst_dir), 'broken_link')
+
+        all(fs.rsync(str(src_dir), str(dst_dir)))
+
+        # verify symlink was copied and remains broken
+        assert os.path.islink(dst_lpath)
+        assert os.readlink(dst_lpath) == '/nonexistent/target/file.txt'
+        assert not os.path.exists(dst_lpath)  # link target doesn't exist
+
+    def test_unicode_filename(self, common_fs_dirs):
+        """Test that rsync handles unicode characters in filenames."""
+        src_dir, dst_dir = common_fs_dirs
+        # use various unicode characters: emoji, cyrillic, chinese, accents
+        unicode_name = 'test_文件_файл_café_🎉.txt'
+        src_fpath = os.path.join(str(src_dir), unicode_name)
+        with open(src_fpath, "w", encoding='utf-8') as f:
+            f.write("unicode content: 你好世界")
+        dst_fpath = os.path.join(str(dst_dir), unicode_name)
+
+        all(fs.rsync(str(src_dir), str(dst_dir)))
+
+        assert os.path.exists(dst_fpath)
+        with open(dst_fpath, "r", encoding='utf-8') as f:
+            assert f.read() == "unicode content: 你好世界"
+
+    def test_filename_with_spaces(self, common_fs_dirs):
+        """Test that rsync handles filenames with spaces."""
+        src_dir, dst_dir = common_fs_dirs
+        spaced_name = 'file with many   spaces.txt'
+        src_fpath = os.path.join(str(src_dir), spaced_name)
+        with open(src_fpath, "w") as f:
+            f.write("spaced content")
+        dst_fpath = os.path.join(str(dst_dir), spaced_name)
+
+        all(fs.rsync(str(src_dir), str(dst_dir)))
+
+        assert os.path.exists(dst_fpath)
+        check_identical_file(src_fpath, dst_fpath)
+
+    def test_empty_file(self, common_fs_dirs):
+        """Test that rsync handles empty (0 byte) files correctly."""
+        src_dir, dst_dir = common_fs_dirs
+        src_fpath = os.path.join(str(src_dir), 'empty.txt')
+        # create empty file
+        open(src_fpath, "w").close()
+        dst_fpath = os.path.join(str(dst_dir), 'empty.txt')
+
+        all(fs.rsync(str(src_dir), str(dst_dir)))
+
+        assert os.path.exists(dst_fpath)
+        assert os.path.getsize(dst_fpath) == 0
+
+    def test_very_long_relative_path(self, common_fs_dirs):
+        """Test that rsync handles deeply nested directory structures."""
+        src_dir, dst_dir = common_fs_dirs
+        # create a deeply nested path (10 levels deep)
+        nested_path = os.path.join(*[f"level{i}" for i in range(10)])
+        src_nested = os.path.join(str(src_dir), nested_path)
+        os.makedirs(src_nested, exist_ok=True)
+
+        # create a file in the deepest directory
+        src_fpath = os.path.join(src_nested, 'deep_file.txt')
+        with open(src_fpath, "w") as f:
+            f.write("deeply nested content")
+
+        dst_nested = os.path.join(str(dst_dir), nested_path)
+        dst_fpath = os.path.join(dst_nested, 'deep_file.txt')
+
+        all(fs.rsync(str(src_dir), str(dst_dir)))
+
+        assert os.path.exists(dst_fpath)
+        check_identical_file(src_fpath, dst_fpath)
+
 
 class TestRsyncBasic:
     """Test suite for basic rsync functionality."""
