@@ -533,3 +533,352 @@ def test_both_external_tools(integration_dirs):
     # External hardlink should preserve hardlinks for unchanged files
     assert stat1.st_ino == stat2.st_ino
     assert stat1.st_nlink == 2
+
+
+class TestErrorRecovery:
+    """Test error recovery and cleanup during backup failures"""
+
+    def test_hardlink_failure_removes_incomplete_backup(
+            self, integration_dirs, monkeypatch
+    ):
+        """Test that incomplete backup is removed when hardlink_dir fails"""
+        backups_dir, source_dir = integration_dirs
+
+        # Create initial backup
+        (source_dir / "file1.txt").write_text("content1")
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False
+        )
+
+        # Verify first backup exists
+        backups = [b for b in os.listdir(str(backups_dir))
+                   if not b.startswith(".")]
+        assert len(backups) == 1
+
+        time.sleep(1.1)
+
+        # Add new file to trigger backup
+        (source_dir / "file2.txt").write_text("content2")
+
+        # Mock hardlink_dir to fail
+        from curateipsum import fs
+        original_hardlink_dir = fs.hardlink_dir
+
+        def failing_hardlink_dir(*args, **kwargs):
+            # Create partial directory to simulate partial failure
+            if "dst_dir" in kwargs:
+                dst = kwargs["dst_dir"]
+            else:
+                dst = args[1] if len(args) > 1 else None
+            if dst:
+                os.makedirs(dst, exist_ok=True)
+                # Create a partial file to test cleanup
+                with open(os.path.join(dst, "partial.txt"), "w") as f:
+                    f.write("partial")
+            return False
+
+        monkeypatch.setattr(fs, "hardlink_dir", failing_hardlink_dir)
+
+        # Try to create second backup (should fail)
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False
+        )
+
+        # Only original backup should exist (failed backup cleaned up)
+        backups = [b for b in os.listdir(str(backups_dir))
+                   if not b.startswith(".")]
+        assert len(backups) == 1
+
+        # Verify the remaining backup is the original one
+        backup_path = os.path.join(str(backups_dir), backups[0])
+        source_name = os.path.basename(str(source_dir))
+        assert os.path.exists(os.path.join(backup_path, source_name,
+                                           "file1.txt"))
+        # file2.txt should not exist in original backup
+        assert not os.path.exists(os.path.join(backup_path, source_name,
+                                               "file2.txt"))
+
+    def test_rsync_failure_removes_incomplete_backup(
+            self, integration_dirs, monkeypatch
+    ):
+        """Test that incomplete backup is removed when rsync fails"""
+        backups_dir, source_dir = integration_dirs
+
+        # Create initial backup
+        (source_dir / "file1.txt").write_text("content1")
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False
+        )
+
+        time.sleep(1.1)
+
+        # Add new file
+        (source_dir / "file2.txt").write_text("content2")
+
+        # Mock rsync to fail immediately without yielding
+        from curateipsum import fs
+
+        def failing_rsync(src, dst, dry_run=False):
+            # Fail immediately before any operations
+            raise fs.BackupCreationError("Simulated rsync failure")
+            # Make this a generator (unreachable but keeps signature)
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(fs, "rsync", failing_rsync)
+
+        # Try to create second backup (should fail and clean up)
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False
+        )
+
+        # Only original backup should exist
+        backups = [b for b in os.listdir(str(backups_dir))
+                   if not b.startswith(".")]
+        assert len(backups) == 1
+
+    def test_incomplete_backup_without_marker(self, integration_dirs):
+        """Test that backups without marker are not counted as valid"""
+        backups_dir, source_dir = integration_dirs
+
+        # Create a complete backup
+        (source_dir / "file1.txt").write_text("content1")
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False
+        )
+
+        # Manually create incomplete backup directory (no marker)
+        incomplete_backup_name = "20250101_120000"
+        incomplete_path = os.path.join(str(backups_dir),
+                                       incomplete_backup_name)
+        os.makedirs(incomplete_path)
+        source_name = os.path.basename(str(source_dir))
+        os.makedirs(os.path.join(incomplete_path, source_name))
+        with open(os.path.join(incomplete_path, source_name,
+                               "incomplete.txt"), "w") as f:
+            f.write("incomplete data")
+
+        # List all directory entries (including incomplete)
+        all_dirs = [d for d in os.listdir(str(backups_dir))
+                    if not d.startswith(".")]
+        assert len(all_dirs) == 2
+
+        # But _iterate_backups should only find complete backup
+        valid_backups = list(bk._iterate_backups(str(backups_dir)))
+        assert len(valid_backups) == 1
+
+        # Verify get_latest_backup ignores incomplete backup
+        latest = bk._get_latest_backup(str(backups_dir))
+        assert latest is not None
+        assert latest.name != incomplete_backup_name
+
+        time.sleep(1.1)
+
+        # New backup should hardlink from the complete backup, not incomplete
+        (source_dir / "file2.txt").write_text("content2")
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False
+        )
+
+        # Should now have 3 directories (1 incomplete, 2 complete)
+        all_dirs = [d for d in os.listdir(str(backups_dir))
+                    if not d.startswith(".")]
+        assert len(all_dirs) == 3
+
+        valid_backups = list(bk._iterate_backups(str(backups_dir)))
+        assert len(valid_backups) == 2
+
+    def test_backup_marker_only_not_valid(self, integration_dirs):
+        """Test that directory with only marker file is not a valid backup"""
+        backups_dir, source_dir = integration_dirs
+
+        # Create directory with only marker file
+        marker_only_name = "20250101_120000"
+        marker_only_path = os.path.join(str(backups_dir), marker_only_name)
+        os.makedirs(marker_only_path)
+        marker_file = os.path.join(marker_only_path,
+                                   f"{bk.BACKUP_MARKER}_{marker_only_name}")
+        with open(marker_file, "w") as f:
+            pass  # empty marker file
+
+        # Should not be recognized as valid backup
+        valid_backups = list(bk._iterate_backups(str(backups_dir)))
+        assert len(valid_backups) == 0
+
+        # get_latest_backup should return None
+        latest = bk._get_latest_backup(str(backups_dir))
+        assert latest is None
+
+    def test_lock_released_after_hardlink_failure(
+            self, integration_dirs, monkeypatch
+    ):
+        """Test that lock is properly released when backup fails"""
+        backups_dir, source_dir = integration_dirs
+
+        # Create initial backup
+        (source_dir / "file1.txt").write_text("content1")
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False
+        )
+
+        time.sleep(1.1)
+        (source_dir / "file2.txt").write_text("content2")
+
+        # Mock hardlink_dir to fail
+        from curateipsum import fs
+
+        def failing_hardlink_dir(*args, **kwargs):
+            return False
+
+        monkeypatch.setattr(fs, "hardlink_dir", failing_hardlink_dir)
+
+        # Manually acquire lock
+        lock_acquired = bk.set_backups_lock(str(backups_dir))
+        assert lock_acquired
+
+        # Verify lock file exists
+        lock_path = os.path.join(str(backups_dir), bk.LOCK_FILE)
+        assert os.path.exists(lock_path)
+
+        try:
+            # Backup should fail due to hardlink failure
+            bk.initiate_backup(
+                sources=[str(source_dir)],
+                backups_dir=str(backups_dir),
+                dry_run=False
+            )
+        finally:
+            # Lock should still exist (we manually acquired it)
+            assert os.path.exists(lock_path)
+
+            # Release lock
+            bk.release_backups_lock(str(backups_dir))
+
+        # Lock should be removed
+        assert not os.path.exists(lock_path)
+
+        # Restore original function and verify backup can proceed
+        monkeypatch.undo()
+
+        # Now backup should succeed
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False
+        )
+
+        # Should have 2 valid backups now
+        backups = [b for b in os.listdir(str(backups_dir))
+                   if not b.startswith(".")]
+        assert len(backups) == 2
+
+    def test_lock_released_after_rsync_failure(
+            self, integration_dirs, monkeypatch
+    ):
+        """Test that lock is released after rsync failure"""
+        backups_dir, source_dir = integration_dirs
+
+        # Create initial backup
+        (source_dir / "file1.txt").write_text("content1")
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False
+        )
+
+        time.sleep(1.1)
+        (source_dir / "file2.txt").write_text("content2")
+
+        # Mock rsync to fail
+        from curateipsum import fs
+
+        def failing_rsync(src, dst, dry_run=False):
+            raise fs.BackupCreationError("Simulated rsync failure")
+
+        monkeypatch.setattr(fs, "rsync", failing_rsync)
+
+        # Manually acquire lock
+        lock_acquired = bk.set_backups_lock(str(backups_dir))
+        assert lock_acquired
+
+        lock_path = os.path.join(str(backups_dir), bk.LOCK_FILE)
+        assert os.path.exists(lock_path)
+
+        try:
+            # Backup should fail
+            bk.initiate_backup(
+                sources=[str(source_dir)],
+                backups_dir=str(backups_dir),
+                dry_run=False
+            )
+        finally:
+            # Lock still exists (we manually acquired it)
+            assert os.path.exists(lock_path)
+            bk.release_backups_lock(str(backups_dir))
+
+        # Lock should be removed
+        assert not os.path.exists(lock_path)
+
+    def test_permission_error_during_cleanup(
+            self, integration_dirs, monkeypatch
+    ):
+        """Test handling of permission errors during failed backup cleanup"""
+        backups_dir, source_dir = integration_dirs
+
+        # Create initial backup
+        (source_dir / "file1.txt").write_text("content1")
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False
+        )
+
+        time.sleep(1.1)
+        (source_dir / "file2.txt").write_text("content2")
+
+        # Track rmtree calls
+        rmtree_called = []
+        original_rmtree = shutil.rmtree
+
+        def tracking_rmtree(path, *args, **kwargs):
+            rmtree_called.append(path)
+            # Let it succeed (ignore_errors=True in code)
+            return original_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "rmtree", tracking_rmtree)
+
+        # Mock rsync to fail
+        from curateipsum import fs
+
+        def failing_rsync(src, dst, dry_run=False):
+            raise fs.BackupCreationError("Simulated failure")
+
+        monkeypatch.setattr(fs, "rsync", failing_rsync)
+
+        # Run backup (will fail and attempt cleanup)
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False
+        )
+
+        # Verify cleanup was attempted (rmtree was called)
+        assert len(rmtree_called) > 0
+
+        # Verify failed backup was removed
+        backups = [b for b in os.listdir(str(backups_dir))
+                   if not b.startswith(".")]
+        assert len(backups) == 1
