@@ -1,4 +1,5 @@
 import os
+import signal
 import pytest
 from unittest import mock
 from datetime import datetime
@@ -411,6 +412,101 @@ class TestBackupLock:
 
         lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
         assert not os.path.exists(lock_path)
+
+    @mock.patch(f"{bk.__name__}.time.sleep")
+    @mock.patch(f"{bk.__name__}.os.kill")
+    @mock.patch(f"{bk.__name__}._pid_exists")
+    def test_force_lock_with_sigterm_success(self, mock_pid_exists, mock_kill,
+                                              mock_sleep, backup_dir):
+        """Test force flag sends SIGTERM and acquires lock when process stops"""
+        backup_dir.mkdir()
+        lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
+
+        # Create lock with PID 12345
+        with open(lock_path, "w") as f:
+            f.write("12345")
+
+        # Simulate process exists initially, then stops after SIGTERM
+        mock_pid_exists.side_effect = [True, False]
+
+        result = bk.set_backups_lock(str(backup_dir), force=True)
+        assert result
+
+        # Verify SIGTERM was sent
+        mock_kill.assert_called_once_with(12345, signal.SIGTERM)
+
+        # Verify we waited after SIGTERM
+        assert mock_sleep.call_count == 1
+        mock_sleep.assert_any_call(5)
+
+        # Verify new lock has current PID
+        with open(lock_path, "r") as f:
+            pid = int(f.read().strip())
+        assert pid == os.getpid()
+
+    @mock.patch(f"{bk.__name__}.time.sleep")
+    @mock.patch(f"{bk.__name__}.os.kill")
+    @mock.patch(f"{bk.__name__}._pid_exists")
+    def test_force_lock_requires_sigkill(self, mock_pid_exists, mock_kill,
+                                         mock_sleep, backup_dir):
+        """Test force flag escalates to SIGKILL when SIGTERM fails"""
+        backup_dir.mkdir()
+        lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
+
+        # Create lock with PID 12345
+        with open(lock_path, "w") as f:
+            f.write("12345")
+
+        # Simulate process survives SIGTERM, dies after SIGKILL
+        mock_pid_exists.side_effect = [True, True, False]
+
+        result = bk.set_backups_lock(str(backup_dir), force=True)
+        assert result
+
+        # Verify both SIGTERM and SIGKILL were sent
+        assert mock_kill.call_count == 2
+        mock_kill.assert_any_call(12345, signal.SIGTERM)
+        mock_kill.assert_any_call(12345, signal.SIGKILL)
+
+        # Verify sleep was called twice (5s after SIGTERM, 1s after SIGKILL)
+        assert mock_sleep.call_count == 2
+        mock_sleep.assert_any_call(5)
+        mock_sleep.assert_any_call(1)
+
+        # Verify new lock has current PID
+        with open(lock_path, "r") as f:
+            pid = int(f.read().strip())
+        assert pid == os.getpid()
+
+    @mock.patch(f"{bk.__name__}.time.sleep")
+    @mock.patch(f"{bk.__name__}.os.kill")
+    @mock.patch(f"{bk.__name__}._pid_exists")
+    def test_force_lock_handles_kill_failure(self, mock_pid_exists, mock_kill,
+                                              mock_sleep, backup_dir):
+        """Test force flag handles os.kill() failures gracefully"""
+        backup_dir.mkdir()
+        lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
+
+        # Create lock with PID 12345
+        with open(lock_path, "w") as f:
+            f.write("12345")
+
+        # Simulate process exists
+        mock_pid_exists.return_value = True
+
+        # Simulate permission error when trying to kill
+        mock_kill.side_effect = OSError("Permission denied")
+
+        result = bk.set_backups_lock(str(backup_dir), force=True)
+        assert not result  # Should fail
+
+        # Verify SIGTERM was attempted
+        mock_kill.assert_called_once_with(12345, signal.SIGTERM)
+
+        # Lock should still exist with old PID
+        with open(lock_path, "r") as f:
+            pid = int(f.read().strip())
+        assert pid == 12345
 
 
 class TestBackupIteration:
