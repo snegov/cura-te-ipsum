@@ -8,6 +8,60 @@ import pytest
 from curateipsum import backup as bk, fs
 
 
+# Shared helper functions for fs tests
+def create_file(parent_dir: str, prefix: str = None) -> str:
+    """
+    Create a file with random name in parent_dir.
+    Returns absolute path to the created file.
+    """
+    fd, path = tempfile.mkstemp(prefix=prefix, dir=parent_dir)
+    with open(fd, "w") as f:
+        f.write(string.printable)
+    return path
+
+
+def create_dir(parent_dir: str, prefix: str = None) -> str:
+    """
+    Create a directory with random name in parent_dir.
+    Returns absolute path to created directory.
+    """
+    return tempfile.mkdtemp(prefix=prefix, dir=parent_dir)
+
+
+def relpath(full_path: str, src_dir: str, dst_dir: str) -> str:
+    """Get a relative path for entity in src/dst dirs."""
+    if full_path.startswith(src_dir):
+        p_dir = src_dir
+    elif full_path.startswith(dst_dir):
+        p_dir = dst_dir
+    else:
+        raise RuntimeError(f"Path {full_path} is not src_dir nor dst_dir")
+
+    return full_path[len(p_dir) + 1:]
+
+
+def check_identical_file(f1_path: str, f2_path: str):
+    """Check that files are identical. Fails test, if not."""
+    st1 = os.lstat(f1_path)
+    st2 = os.lstat(f2_path)
+
+    assert st1.st_uid == st2.st_uid
+    assert st1.st_gid == st2.st_gid
+    assert st1.st_mode == st2.st_mode
+    assert st1.st_mtime == st2.st_mtime
+    assert st1.st_size == st2.st_size
+
+
+@pytest.fixture
+def common_fs_dirs(tmp_path):
+    """Create source and destination directories for tests."""
+    src_dir = tmp_path / "source"
+    dst_dir = tmp_path / "dest"
+    src_dir.mkdir()
+    dst_dir.mkdir()
+    return src_dir, dst_dir
+
+
 @pytest.fixture
 def backup_dir(tmp_path):
     """Provide a temporary backup directory."""
