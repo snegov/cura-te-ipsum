@@ -1,4 +1,5 @@
 import os
+import pytest
 from unittest import mock
 from datetime import datetime
 
@@ -192,6 +193,119 @@ class TestBackupCleanup:
         ]
         run_cleanup(keep_all=2, dry_run=True)
         check_backups(backups)
+
+    @pytest.mark.xfail(reason="Bug #32: coarser retention tiers override finer "
+                              "tiers, violating retention guarantees", strict=True)
+    @mock.patch(f"{bk.__name__}.datetime", wraps=datetime)
+    def test_combined_retention_policies(self, mock_datetime, add_backup,
+                                          run_cleanup, check_backups):
+        """Test all retention policies working together
+
+        Tests EXPECTED behavior where retention policies honor their
+        documented guarantees. Currently fails due to bug where coarser
+        retention tiers (weekly/monthly/yearly) can override finer tiers
+        (all/daily/weekly/monthly), violating retention guarantees.
+
+        Bug affects multiple tier interactions (see issue #32):
+        - Weekly overrides daily: Nov 4 removed by weekly
+        - Monthly overrides weekly: Oct 11 removed by monthly
+        - Yearly overrides monthly: May 15 removed by yearly
+
+        Once fixed, this test will pass and validate that each tier protects
+        its threshold range from coarser tiers.
+        """
+        # Current: 2021-11-11 (Thursday)
+        # Policies: keep_all=2, keep_daily=7, keep_weekly=4,
+        #           keep_monthly=6, keep_yearly=3
+        # Thresholds: all=Nov 9, daily=Nov 4, weekly=Oct 11,
+        #             monthly=May 1, yearly=Jan 1 2018
+        mock_datetime.now.return_value = datetime(2021, 11, 11)
+
+        # Use dict for readability
+        b = {}
+
+        # Keep-all range (all backups after Nov 9)
+        b["nov_11"] = add_backup("20211111_0300")
+        b["nov_10_23h"] = add_backup("20211110_2300")
+        b["nov_10_12h"] = add_backup("20211110_1200")
+        b["nov_10_01h"] = add_backup("20211110_0100")
+        b["nov_09"] = add_backup("20211109_0300")
+
+        # Daily range (one per day: Nov 4-8)
+        b["nov_08_dupe"] = add_backup("20211108_2200")  # removed: not oldest
+        b["nov_08"] = add_backup("20211108_0100")
+        b["nov_07"] = add_backup("20211107_0100")
+        b["nov_06_dupe"] = add_backup("20211106_1800")  # removed: not oldest
+        b["nov_06"] = add_backup("20211106_0100")
+        b["nov_05"] = add_backup("20211105_0100")
+        b["nov_04"] = add_backup("20211104_0100")  # BUG: removed by weekly!
+
+        # Weekly range (one per week: Oct 11-Nov 7)
+        b["nov_03"] = add_backup("20211103_0300")  # removed: same week
+        b["nov_01_dupe"] = add_backup("20211101_1500")  # removed: not oldest
+        b["nov_01"] = add_backup("20211101_0100")
+        b["oct_31"] = add_backup("20211031_0100")  # removed: same week
+        b["oct_25_dupe"] = add_backup("20211025_2000")  # removed: not oldest
+        b["oct_25"] = add_backup("20211025_0100")
+        b["oct_18"] = add_backup("20211018_0100")
+        b["oct_11"] = add_backup("20211011_0100")  # BUG: removed by monthly!
+
+        # Monthly range (one per month: May-Oct)
+        b["oct_04"] = add_backup("20211004_0100")  # removed: same month
+        b["oct_01"] = add_backup("20211001_0100")
+        b["sep_15_dupe"] = add_backup("20210915_2000")  # removed: not oldest
+        b["sep_15"] = add_backup("20210915_0100")
+        b["aug_15"] = add_backup("20210815_0100")
+        b["jul_15_dupe"] = add_backup("20210715_1200")  # removed: not oldest
+        b["jul_15"] = add_backup("20210715_0100")
+        b["jun_15"] = add_backup("20210615_0100")
+        b["may_15"] = add_backup("20210515_0100")  # BUG: removed by yearly!
+
+        # Yearly range (one per year: 2018-2021)
+        b["apr_15"] = add_backup("20210415_0100")  # removed: same year
+        b["jan_15_2021"] = add_backup("20210115_0100")
+        b["dec_15_2020"] = add_backup("20201215_0100")  # removed: same year
+        b["jul_15_2020"] = add_backup("20200715_0100")  # removed: same year
+        b["jan_15_2020"] = add_backup("20200115_0100")
+        b["dec_15_2019_dupe"] = add_backup("20191215_2300")  # removed: not oldest
+        b["dec_15_2019"] = add_backup("20191215_0100")  # removed: same year
+        b["jul_15_2019"] = add_backup("20190715_0100")  # removed: same year
+        b["jan_15_2019"] = add_backup("20190115_0100")
+        b["nov_15_2018"] = add_backup("20181115_0100")  # removed: same year
+        b["jan_15_2018"] = add_backup("20180115_0100")
+
+        # Beyond all thresholds
+        b["jan_15_2017"] = add_backup("20170115_0100")  # removed: too old
+
+        # Expected: each tier protects its range
+        expected = [
+            # keep_all: all 5 backups
+            b["nov_11"], b["nov_10_23h"], b["nov_10_12h"],
+            b["nov_10_01h"], b["nov_09"],
+
+            # daily: oldest per day (Nov 4-8) = 5 backups
+            # BUG: nov_04 missing - removed by weekly (same week as nov_03)
+            b["nov_08"], b["nov_07"], b["nov_06"], b["nov_05"],
+            b["nov_04"],
+
+            # weekly: oldest per week (Oct 11 - Nov 7) = 4 backups
+            # BUG: oct_11 missing - removed by monthly (same month as oct_01)
+            b["nov_01"], b["oct_25"], b["oct_18"], b["oct_11"],
+
+            # monthly: oldest per month (May-Oct) = 6 backups
+            # BUG: may_15 missing - removed by yearly (same year as jan_15_2021)
+            b["oct_01"], b["sep_15"], b["aug_15"],
+            b["jul_15"], b["jun_15"],
+            b["may_15"],
+
+            # yearly: oldest per year (2018-2021) = 4 backups
+            b["jan_15_2021"], b["jan_15_2020"],
+            b["jan_15_2019"], b["jan_15_2018"],
+        ]
+
+        run_cleanup(keep_all=2, keep_daily=7, keep_weekly=4,
+                   keep_monthly=6, keep_yearly=3)
+        check_backups(expected)
 
 
 class TestBackupLock:
