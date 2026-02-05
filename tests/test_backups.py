@@ -308,6 +308,80 @@ class TestBackupCleanup:
                    keep_monthly=6, keep_yearly=3)
         check_backups(expected)
 
+    @mock.patch(f"{bk.__name__}.datetime", wraps=datetime)
+    def test_iso_week_53_year_boundary(self, mock_datetime, add_backup,
+                                        run_cleanup, check_backups):
+        """Test ISO week 53 spanning year boundary (2020-2021)
+
+        2020 had 53 ISO weeks. Both Dec 31, 2020 and Jan 1-3, 2021 belong
+        to ISO week 53 of 2020. These should be treated as the same week.
+        """
+        # Current: 2021-01-10 (Sunday, ISO week 1 of 2021)
+        mock_datetime.now.return_value = datetime(2021, 1, 10)
+
+        backups = [
+            add_backup("20210103_1200"),  # Sun, ISO 2020-W53
+            add_backup("20210102_1200"),  # Sat, ISO 2020-W53
+            add_backup("20210101_1200"),  # Fri, ISO 2020-W53, same week
+            add_backup("20201231_1200"),  # Thu, ISO 2020-W53, first in week
+            add_backup("20201230_1200"),  # Wed, ISO 2020-W53
+            add_backup("20201228_1200"),  # Mon, ISO 2020-W53
+        ]
+
+        # Keep one week: should keep oldest backup from ISO week 53
+        expected = [backups[5]]  # 20201228
+        run_cleanup(keep_weekly=1)
+        check_backups(expected)
+
+    @pytest.mark.xfail(reason="Bug #33: Weekly retention bug: same ISO week "
+                              "number across years treated as duplicates", strict=True)
+    @mock.patch(f"{bk.__name__}.datetime", wraps=datetime)
+    def test_iso_week_number_across_years(self, mock_datetime, add_backup,
+                                           run_cleanup, check_backups):
+        """Test same ISO week number in different years
+
+        Tests that week 1 in 2022 and week 1 in 2023 are treated as
+        different weeks. Both backups are within retention window to
+        isolate the ISO year comparison bug.
+        """
+        # Current: 2023-01-15 (Sunday, ISO week 2 of 2023)
+        mock_datetime.now.return_value = datetime(2023, 1, 15)
+
+        backups = [
+            add_backup("20230103_1200"),    # Tue, ISO week 1 of 2023
+            add_backup("20220104_1200"),    # Tue, ISO week 1 of 2022
+        ]
+
+        # Both are within 60-week window, but different ISO years
+        expected = backups
+        run_cleanup(keep_weekly=60)
+        check_backups(expected)
+
+    @mock.patch(f"{bk.__name__}.datetime", wraps=datetime)
+    def test_late_december_in_week_1_next_year(self, mock_datetime, add_backup,
+                                                 run_cleanup, check_backups):
+        """Test late December dates in week 1 of next year
+
+        In some years, Dec 29-31 belong to ISO week 1 of the next year
+        (e.g., 2024-12-30 is in ISO 2025-W01). These should be grouped
+        with early January dates of the same ISO week.
+        """
+        # Current: 2025-01-15 (Wednesday, ISO week 3)
+        mock_datetime.now.return_value = datetime(2025, 1, 15)
+
+        backups = [
+            add_backup("20241230_1200"),    # Mon, ISO 2025-W01 (late Dec!)
+            add_backup("20241231_1200"),    # Tue, ISO 2025-W01
+            add_backup("20250102_1200"),    # Thu, ISO 2025-W01
+            add_backup("20250104_1200"),    # Sat, ISO 2025-W01
+            add_backup("20250108_1200"),    # Wed, ISO 2025-W02
+            add_backup("20250112_1200"),    # Sun, ISO 2025-W02
+        ]
+
+        # Keep weekly: oldest from week 1 (Dec 30) and week 2 (Jan 8)
+        expected = [backups[0], backups[4]]
+        run_cleanup(keep_weekly=10)
+        check_backups(expected)
 
 class TestBackupLock:
     """Test suite for backup lock file functionality."""
