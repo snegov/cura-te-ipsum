@@ -29,37 +29,78 @@ class Actions(enum.Enum):
 
 
 class PseudoDirEntry:
+    """
+    Duck-typed os.DirEntry for paths that don't exist yet or when you need
+    DirEntry-like interface for arbitrary paths.
+
+    Problem: os.DirEntry is created by os.scandir() and cannot be manually
+    constructed. But we need DirEntry-compatible objects for:
+    - Paths that will exist soon (new backup directories)
+    - Constructed paths (marker files)
+    - Uniform interface in functions accepting both real and future entries
+
+    Why not just use strings? Functions like rm_direntry(), copy_direntry()
+    accept Union[os.DirEntry, PseudoDirEntry] and call .is_dir(), .stat()
+    methods. Using this class avoids branching on type throughout the codebase.
+
+    Why not pathlib.Path? We heavily use os.scandir() which returns DirEntry
+    objects with cached stat info. PseudoDirEntry maintains API consistency
+    with minimal overhead.
+
+    Example usage:
+        # Create entry for future backup directory
+        cur_backup = PseudoDirEntry("/backups/20260204_120000")
+        os.mkdir(cur_backup.path)
+        set_backup_marker(cur_backup)  # accepts DirEntry-like object
+
+    Caches stat results like real DirEntry to avoid repeated syscalls.
+    """
     def __init__(self, path):
-        self.path = os.path.realpath(path)
+        # Use abspath, not realpath - realpath resolves symlinks
+        self.path = os.path.abspath(path)
         self.name = os.path.basename(self.path)
         self._is_dir = None
         self._is_file = None
         self._is_symlink = None
-        self._stat = None
+        # Cache both stat and lstat separately
+        self._stat_follow = None
+        self._stat_nofollow = None
 
     def __str__(self):
         return self.name
 
     def is_dir(self, follow_symlinks: bool = True) -> bool:
-        if self._is_dir is None:
-            self._is_dir = os.path.isdir(self.path)
-        return self._is_dir
+        if follow_symlinks:
+            if self._is_dir is None:
+                self._is_dir = os.path.isdir(self.path)
+            return self._is_dir
+        else:
+            # When not following symlinks, must return False if path is symlink
+            return os.path.isdir(self.path) and not os.path.islink(self.path)
 
     def is_file(self, follow_symlinks: bool = True) -> bool:
-        if self._is_file is None:
-            self._is_file = os.path.isfile(self.path)
-        return self._is_file
+        if follow_symlinks:
+            if self._is_file is None:
+                self._is_file = os.path.isfile(self.path)
+            return self._is_file
+        else:
+            # When not following symlinks, must return False if path is symlink
+            return os.path.isfile(self.path) and not os.path.islink(self.path)
 
-    def is_symlink(self, follow_symlinks: bool = True) -> bool:
+    def is_symlink(self) -> bool:
         if self._is_symlink is None:
             self._is_symlink = os.path.islink(self.path)
         return self._is_symlink
 
     def stat(self, follow_symlinks: bool = True):
-        if self._stat is None:
-            func = os.stat if follow_symlinks else os.lstat
-            self._stat = func(self.path)
-        return self._stat
+        if follow_symlinks:
+            if self._stat_follow is None:
+                self._stat_follow = os.stat(self.path)
+            return self._stat_follow
+        else:
+            if self._stat_nofollow is None:
+                self._stat_nofollow = os.lstat(self.path)
+            return self._stat_nofollow
 
 
 def _parse_rsync_output(line: str) -> Tuple[str, Actions, str]:
