@@ -3,6 +3,8 @@ Integration tests for the full backup workflow.
 Tests the complete backup process from start to finish.
 """
 import os
+import shutil
+import sys
 import time
 import pytest
 
@@ -374,3 +376,160 @@ def test_find_file_version_in_old_backup(recovery_dirs):
                                 source_name, "document.txt")
     with open(backup2_file, "r") as f:
         assert f.read() == "version 2"
+
+
+# External tool availability checks
+RSYNC_AVAILABLE = shutil.which("rsync") is not None
+CP_PROGRAM = "gcp" if sys.platform == "darwin" else "cp"
+CP_AVAILABLE = shutil.which(CP_PROGRAM) is not None
+
+
+@pytest.mark.skipif(not RSYNC_AVAILABLE, reason="rsync not available")
+def test_external_rsync_creates_backup(integration_dirs):
+    """Test backup using external rsync binary"""
+    backups_dir, source_dir = integration_dirs
+
+    # Create initial file
+    (source_dir / "file1.txt").write_text("content1")
+
+    # Create first backup with Python rsync (to establish baseline)
+    bk.initiate_backup(
+        sources=[str(source_dir)],
+        backups_dir=str(backups_dir),
+        dry_run=False
+    )
+
+    time.sleep(1.1)
+
+    # Add new file for second backup
+    (source_dir / "file2.txt").write_text("content2")
+
+    # Second backup with external rsync
+    bk.initiate_backup(
+        sources=[str(source_dir)],
+        backups_dir=str(backups_dir),
+        dry_run=False,
+        external_rsync=True
+    )
+
+    # Verify two backups exist
+    backups = sorted([b for b in os.listdir(str(backups_dir))
+                      if not b.startswith(".")])
+    assert len(backups) == 2
+
+    # Verify files exist in second backup
+    backup_path = os.path.join(str(backups_dir), backups[1])
+    source_name = os.path.basename(str(source_dir))
+    backup_file1 = os.path.join(backup_path, source_name, "file1.txt")
+    backup_file2 = os.path.join(backup_path, source_name, "file2.txt")
+
+    assert os.path.exists(backup_file1)
+    assert os.path.exists(backup_file2)
+    assert open(backup_file1).read() == "content1"
+    assert open(backup_file2).read() == "content2"
+
+
+@pytest.mark.skipif(not CP_AVAILABLE, reason=f"{CP_PROGRAM} not available")
+def test_external_hardlink_creates_backup(integration_dirs):
+    """Test backup using external cp/gcp for hardlinking"""
+    backups_dir, source_dir = integration_dirs
+
+    # Create initial file
+    (source_dir / "unchanged.txt").write_text("unchanged content")
+
+    # First backup (creates baseline)
+    bk.initiate_backup(
+        sources=[str(source_dir)],
+        backups_dir=str(backups_dir),
+        dry_run=False,
+        external_hardlink=True
+    )
+
+    time.sleep(1.1)
+
+    # Add new file for second backup
+    (source_dir / "new.txt").write_text("new content")
+
+    # Second backup with external hardlink
+    bk.initiate_backup(
+        sources=[str(source_dir)],
+        backups_dir=str(backups_dir),
+        dry_run=False,
+        external_hardlink=True
+    )
+
+    # Verify two backups exist
+    backups = sorted([b for b in os.listdir(str(backups_dir))
+                      if not b.startswith(".")])
+    assert len(backups) == 2
+
+    # Verify unchanged file is hardlinked (same inode)
+    source_name = os.path.basename(str(source_dir))
+    file1_path = os.path.join(str(backups_dir), backups[0],
+                              source_name, "unchanged.txt")
+    file2_path = os.path.join(str(backups_dir), backups[1],
+                              source_name, "unchanged.txt")
+
+    stat1 = os.stat(file1_path)
+    stat2 = os.stat(file2_path)
+
+    # Same inode means hardlinked
+    assert stat1.st_ino == stat2.st_ino
+    assert stat1.st_nlink == 2
+
+
+@pytest.mark.skipif(not (RSYNC_AVAILABLE and CP_AVAILABLE),
+                    reason=f"rsync or {CP_PROGRAM} not available")
+def test_both_external_tools(integration_dirs):
+    """Test backup using both external rsync and external hardlink"""
+    backups_dir, source_dir = integration_dirs
+
+    # Create initial files
+    (source_dir / "unchanged.txt").write_text("unchanged")
+    (source_dir / "modified.txt").write_text("original")
+
+    # First backup with Python tools (to establish baseline)
+    bk.initiate_backup(
+        sources=[str(source_dir)],
+        backups_dir=str(backups_dir),
+        dry_run=False
+    )
+
+    time.sleep(1.1)
+
+    # Modify one file, leave other unchanged
+    (source_dir / "modified.txt").write_text("new content")
+
+    # Second backup with external tools
+    bk.initiate_backup(
+        sources=[str(source_dir)],
+        backups_dir=str(backups_dir),
+        dry_run=False,
+        external_rsync=True,
+        external_hardlink=True
+    )
+
+    # Verify two backups exist
+    backups = sorted([b for b in os.listdir(str(backups_dir))
+                      if not b.startswith(".")])
+    assert len(backups) == 2
+
+    source_name = os.path.basename(str(source_dir))
+
+    # Verify modified file has new content in second backup
+    backup2_modified = os.path.join(str(backups_dir), backups[1],
+                                    source_name, "modified.txt")
+    assert open(backup2_modified).read() == "new content"
+
+    # Verify unchanged file is hardlinked between backups
+    backup1_unchanged = os.path.join(str(backups_dir), backups[0],
+                                     source_name, "unchanged.txt")
+    backup2_unchanged = os.path.join(str(backups_dir), backups[1],
+                                     source_name, "unchanged.txt")
+
+    stat1 = os.stat(backup1_unchanged)
+    stat2 = os.stat(backup2_unchanged)
+
+    # External hardlink should preserve hardlinks for unchanged files
+    assert stat1.st_ino == stat2.st_ino
+    assert stat1.st_nlink == 2
