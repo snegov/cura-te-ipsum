@@ -216,6 +216,129 @@ class TestCopyDirEntry:
         assert os.path.islink(dst_link)
         assert os.readlink(dst_link) == target_path
 
+    def test_copy_file_preserves_times(self, tmp_path):
+        """Test that file timestamps are preserved"""
+        src_path = os.path.join(str(tmp_path), "source.txt")
+        dst_path = os.path.join(str(tmp_path), "dest.txt")
+
+        with open(src_path, "w") as f:
+            f.write("test content")
+
+        # set specific timestamps: atime=1000000000, mtime=2000000000
+        os.utime(src_path, (1000000000, 2000000000))
+
+        # capture original times before copy (copy will update src atime)
+        orig_stat = os.lstat(src_path)
+
+        entry = fs.PseudoDirEntry(src_path)
+        fs.copy_direntry(entry, dst_path)
+
+        dst_stat = os.lstat(dst_path)
+        assert dst_stat.st_atime == orig_stat.st_atime
+        assert dst_stat.st_mtime == orig_stat.st_mtime
+
+    def test_copy_file_preserves_permissions(self, tmp_path):
+        """Test that file permissions are preserved"""
+        src_path = os.path.join(str(tmp_path), "source.txt")
+        dst_path = os.path.join(str(tmp_path), "dest.txt")
+
+        with open(src_path, "w") as f:
+            f.write("test content")
+        os.chmod(src_path, 0o600)
+
+        entry = fs.PseudoDirEntry(src_path)
+        fs.copy_direntry(entry, dst_path)
+
+        src_stat = os.lstat(src_path)
+        dst_stat = os.lstat(dst_path)
+        assert dst_stat.st_mode == src_stat.st_mode
+
+    def test_copy_directory_preserves_times(self, tmp_path):
+        """Test that directory timestamps are preserved"""
+        src_path = os.path.join(str(tmp_path), "srcdir")
+        dst_path = os.path.join(str(tmp_path), "dstdir")
+
+        os.mkdir(src_path)
+        # set specific timestamps
+        os.utime(src_path, (1000000000, 2000000000))
+
+        entry = fs.PseudoDirEntry(src_path)
+        fs.copy_direntry(entry, dst_path)
+
+        src_stat = os.lstat(src_path)
+        dst_stat = os.lstat(dst_path)
+        assert dst_stat.st_atime == src_stat.st_atime
+        assert dst_stat.st_mtime == src_stat.st_mtime
+
+    def test_copy_directory_preserves_permissions(self, tmp_path):
+        """Test that directory permissions are preserved"""
+        src_path = os.path.join(str(tmp_path), "srcdir")
+        dst_path = os.path.join(str(tmp_path), "dstdir")
+
+        os.mkdir(src_path)
+        os.chmod(src_path, 0o700)
+
+        entry = fs.PseudoDirEntry(src_path)
+        fs.copy_direntry(entry, dst_path)
+
+        src_stat = os.lstat(src_path)
+        dst_stat = os.lstat(dst_path)
+        assert dst_stat.st_mode == src_stat.st_mode
+
+    def test_copy_symlink_preserves_times_if_supported(self, tmp_path):
+        """Test that symlink timestamps are preserved (OS-dependent)"""
+        target_path = os.path.join(str(tmp_path), "target.txt")
+        src_link = os.path.join(str(tmp_path), "source_link")
+        dst_link = os.path.join(str(tmp_path), "dest_link")
+
+        with open(target_path, "w") as f:
+            f.write("target")
+        os.symlink(target_path, src_link)
+
+        # set symlink timestamps if supported
+        if os.utime in os.supports_follow_symlinks:
+            os.utime(src_link, (1000000000, 2000000000),
+                     follow_symlinks=False)
+            # capture original times before copy
+            orig_stat = os.lstat(src_link)
+
+        # find the real os.DirEntry for the symlink
+        entry = None
+        with os.scandir(str(tmp_path)) as it:
+            for e in it:
+                if e.name == "source_link":
+                    entry = e
+                    break
+
+        fs.copy_direntry(entry, dst_link)
+
+        if os.utime in os.supports_follow_symlinks:
+            dst_stat = os.lstat(dst_link)
+            assert dst_stat.st_atime == orig_stat.st_atime
+            assert dst_stat.st_mtime == orig_stat.st_mtime
+        else:
+            # just verify the symlink was created
+            assert os.path.islink(dst_link)
+
+    def test_copy_file_preserves_ownership_if_root(self, tmp_path):
+        """Test that file ownership is preserved (requires root)"""
+        if os.geteuid() != 0:
+            pytest.skip("Ownership tests require root privileges")
+
+        src_path = os.path.join(str(tmp_path), "source.txt")
+        dst_path = os.path.join(str(tmp_path), "dest.txt")
+
+        with open(src_path, "w") as f:
+            f.write("test content")
+
+        entry = fs.PseudoDirEntry(src_path)
+        fs.copy_direntry(entry, dst_path)
+
+        src_stat = os.lstat(src_path)
+        dst_stat = os.lstat(dst_path)
+        assert dst_stat.st_uid == src_stat.st_uid
+        assert dst_stat.st_gid == src_stat.st_gid
+
 
 class TestHardlinkDirBasic:
     """Test suite for basic hardlink_dir functionality."""

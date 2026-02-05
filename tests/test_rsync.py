@@ -175,9 +175,6 @@ class TestRsync:
         assert os.path.lexists(dst_fpath)
         check_identical_file(src_fpath, dst_fpath)
 
-    # TODO add tests for changing ownership
-    # TODO add tests for changing times (?)
-
 
 class TestRsyncBasic:
     """Test suite for basic rsync functionality."""
