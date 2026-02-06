@@ -10,7 +10,7 @@ authors = [
     {name = "Maks Snegov", email = "snegov@spqr.link"}
 ]
 readme = "README.md"
-requires-python = ">=3.6"
+requires-python = ">=3.8"
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
@@ -34,3 +34,8 @@ packages = ["curateipsum"]
 
 [tool.setuptools_scm]
 version_file = "curateipsum/_version.py"
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0.1",
+]
