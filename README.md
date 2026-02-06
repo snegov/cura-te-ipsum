@@ -26,7 +26,7 @@ pip install .
 
 ### Requirements
 
-- Python 3.6 or higher
+- Python 3.8 or higher
 - Linux or macOS operating system
 - Optional: `rsync` and GNU `cp` for alternative implementation modes
 
