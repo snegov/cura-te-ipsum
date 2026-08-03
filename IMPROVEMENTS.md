@@ -74,11 +74,11 @@ Acceptance criteria:
 
 ### Prevent stale, truncated, or changing-file copies
 
-- [ ] Handle partial writes correctly or use a proven copy primitive.
-- [ ] Use nanosecond timestamps and a documented integrity strategy.
-- [ ] Add checksum verification, either always or through an explicit mode.
-- [ ] Stat files before and after copying and retry or fail if they changed.
-- [ ] Record integrity information in the completion manifest.
+- [x] Handle partial writes correctly or use a proven copy primitive.
+- [x] Use nanosecond timestamps and a documented integrity strategy.
+- [x] Add checksum verification, either always or through an explicit mode.
+- [x] Stat files before and after copying and retry or fail if they changed.
+- [x] Record integrity information in the completion manifest.
 
 Acceptance criteria:
 

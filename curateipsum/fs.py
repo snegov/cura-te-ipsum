@@ -4,12 +4,13 @@ Module with filesystem-related functions.
 
 import enum
 import glob
+import hashlib
 import logging
 import os
 import subprocess
 import sys
 import uuid
-from typing import Iterable, Tuple, Union
+from typing import Iterable, Optional, Tuple, Union
 
 _lg = logging.getLogger(__name__)
 
@@ -221,16 +222,46 @@ WRITE_FLAGS = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | O_BINARY
 BUFFER_SIZE = 128 * 1024
 
 
-def copy_file(src, dst):
-    """ Copy file from src to dst. Faster than shutil.copy. """
+def _write_all(fd: int, data: bytes):
+    """os.write() may write fewer bytes than given; loop until it's all out."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        view = view[written:]
+
+
+def copy_file(src, dst) -> str:
+    """
+    Copy file from src to dst. Faster than shutil.copy.
+
+    Compares fstat() on the source's own open file descriptor before and
+    after the read loop - this reflects the underlying inode directly, so
+    it catches the source being truncated, grown, or overwritten in place
+    while being read (and isn't fooled by the source path being renamed
+    or unlinked mid-copy, since the descriptor keeps referring to the
+    same inode regardless). Nanosecond mtime is used so a same-second
+    modification can't slip past undetected.
+
+    :return: sha256 hex digest of the bytes actually copied.
+    :raises BackupCreationError: if the source changed while being read.
+    """
     fin = None
     fout = None
     try:
         fin = os.open(src, READ_FLAGS)
-        fstat = os.fstat(fin)
-        fout = os.open(dst, WRITE_FLAGS, fstat.st_mode)
-        for x in iter(lambda: os.read(fin, BUFFER_SIZE), b""):
-            os.write(fout, x)
+        stat_before = os.fstat(fin)
+        fout = os.open(dst, WRITE_FLAGS, stat_before.st_mode)
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: os.read(fin, BUFFER_SIZE), b""):
+            _write_all(fout, chunk)
+            digest.update(chunk)
+        stat_after = os.fstat(fin)
+        if (stat_after.st_size != stat_before.st_size
+                or stat_after.st_mtime_ns != stat_before.st_mtime_ns):
+            raise BackupCreationError(
+                "Source file changed while being copied: %s" % src
+            )
+        return digest.hexdigest()
     finally:
         if fout is not None:
             try:
@@ -272,9 +303,9 @@ def _break_shared_hardlink(path: str):
             _lg.debug("Cannot preserve ownership while breaking hardlink "
                       "(not root): %s", path)
         os.chmod(tmp_path, st.st_mode)
-        os.utime(tmp_path, (st.st_atime, st.st_mtime))
+        os.utime(tmp_path, ns=(st.st_atime_ns, st.st_mtime_ns))
         os.replace(tmp_path, path)
-    except OSError:
+    except (OSError, BackupCreationError):
         try:
             os.unlink(tmp_path)
         except OSError:
@@ -282,9 +313,15 @@ def _break_shared_hardlink(path: str):
         raise
 
 
-def copy_direntry(entry: Union[os.DirEntry, PseudoDirEntry], dst_path):
-    """ Non-recursive DirEntry (file/dir/symlink) copy. """
+def copy_direntry(entry: Union[os.DirEntry, PseudoDirEntry],
+                  dst_path) -> Optional[str]:
+    """
+    Non-recursive DirEntry (file/dir/symlink) copy.
+    :return: sha256 hex digest of the copied content for a regular file,
+        None for a directory or symlink (nothing to hash).
+    """
     src_stat = entry.stat(follow_symlinks=False)
+    digest = None
     # Classify with lstat semantics and check symlink-ness first: is_dir()
     # (and is_file()) default to follow_symlinks=True, so a symlink
     # pointing at a directory would otherwise be misclassified as a
@@ -298,8 +335,12 @@ def copy_direntry(entry: Union[os.DirEntry, PseudoDirEntry], dst_path):
         os.mkdir(dst_path)
 
     else:
-        copy_file(entry.path, dst_path)
+        digest = copy_file(entry.path, dst_path)
 
+    # Nanosecond timestamps: st_mtime (float seconds) loses sub-second
+    # precision, which could make a real content change on a fast-moving
+    # file look identical to an unrelated file with the same whole-second
+    # mtime once rounded.
     if entry.is_symlink():
         # change symlink attributes only if supported by OS
         if os.chown in os.supports_follow_symlinks:
@@ -311,7 +352,8 @@ def copy_direntry(entry: Union[os.DirEntry, PseudoDirEntry], dst_path):
         if os.chmod in os.supports_follow_symlinks:
             os.chmod(dst_path, src_stat.st_mode, follow_symlinks=False)
         if os.utime in os.supports_follow_symlinks:
-            os.utime(dst_path, (src_stat.st_atime, src_stat.st_mtime),
+            os.utime(dst_path,
+                     ns=(src_stat.st_atime_ns, src_stat.st_mtime_ns),
                      follow_symlinks=False)
     else:
         try:
@@ -319,17 +361,21 @@ def copy_direntry(entry: Union[os.DirEntry, PseudoDirEntry], dst_path):
         except PermissionError:
             _lg.debug("Cannot change ownership (not root): %s", dst_path)
         os.chmod(dst_path, src_stat.st_mode)
-        os.utime(dst_path, (src_stat.st_atime, src_stat.st_mtime))
+        os.utime(dst_path, ns=(src_stat.st_atime_ns, src_stat.st_mtime_ns))
+
+    return digest
 
 
-def update_direntry(src_entry: os.DirEntry, dst_entry: os.DirEntry):
+def update_direntry(src_entry: os.DirEntry,
+                    dst_entry: os.DirEntry) -> Optional[str]:
     """
     Make dst DirEntry (file/dir/symlink) same as src.
     If dst is directory, its content will be removed.
     Src dir content will not be copied into dst dir.
+    :return: see copy_direntry().
     """
     rm_direntry(dst_entry)
-    copy_direntry(src_entry, dst_entry.path)
+    return copy_direntry(src_entry, dst_entry.path)
 
 
 def rsync(src_dir,
@@ -390,9 +436,9 @@ def rsync(src_dir,
                           " (src is a file, dst is not a file): %s",
                           rel_path)
                 try:
-                    update_direntry(src_entry, dst_entry)
-                    yield rel_path, Actions.REWRITE, ""
-                except OSError as exc:
+                    digest = update_direntry(src_entry, dst_entry)
+                    yield rel_path, Actions.REWRITE, digest or ""
+                except (OSError, BackupCreationError) as exc:
                     yield rel_path, Actions.ERROR, str(exc)
                 continue
 
@@ -404,7 +450,7 @@ def rsync(src_dir,
                 try:
                     update_direntry(src_entry, dst_entry)
                     yield rel_path, Actions.REWRITE, ""
-                except OSError as exc:
+                except (OSError, BackupCreationError) as exc:
                     yield rel_path, Actions.ERROR, str(exc)
                 continue
 
@@ -416,7 +462,7 @@ def rsync(src_dir,
                 try:
                     update_direntry(src_entry, dst_entry)
                     yield rel_path, Actions.REWRITE, ""
-                except OSError as exc:
+                except (OSError, BackupCreationError) as exc:
                     yield rel_path, Actions.ERROR, str(exc)
                 continue
 
@@ -424,9 +470,9 @@ def rsync(src_dir,
         if src_entry.inode() == dst_entry.inode():
             _lg.debug("Rsync, rewriting (different inodes): %s", rel_path)
             try:
-                update_direntry(src_entry, dst_entry)
-                yield rel_path, Actions.REWRITE, ""
-            except OSError as exc:
+                digest = update_direntry(src_entry, dst_entry)
+                yield rel_path, Actions.REWRITE, digest or ""
+            except (OSError, BackupCreationError) as exc:
                 yield rel_path, Actions.ERROR, str(exc)
             continue
 
@@ -436,15 +482,15 @@ def rsync(src_dir,
         # rewrite dst file/symlink which have different size or mtime than src
         if src_entry.is_file(follow_symlinks=False):
             same_size = src_stat.st_size == dst_stat.st_size
-            same_mtime = src_stat.st_mtime == dst_stat.st_mtime
+            same_mtime = src_stat.st_mtime_ns == dst_stat.st_mtime_ns
             if not (same_size and same_mtime):
                 reason = "size" if not same_size else "time"
                 _lg.debug("Rsync, rewriting (different %s): %s",
                           reason, rel_path)
                 try:
-                    update_direntry(src_entry, dst_entry)
-                    yield rel_path, Actions.REWRITE, ""
-                except OSError as exc:
+                    digest = update_direntry(src_entry, dst_entry)
+                    yield rel_path, Actions.REWRITE, digest or ""
+                except (OSError, BackupCreationError) as exc:
                     yield rel_path, Actions.ERROR, str(exc)
                 continue
 
@@ -456,7 +502,7 @@ def rsync(src_dir,
                 try:
                     update_direntry(src_entry, dst_entry)
                     yield rel_path, Actions.REWRITE, ""
-                except OSError as exc:
+                except (OSError, BackupCreationError) as exc:
                     yield rel_path, Actions.ERROR, str(exc)
                 continue
 
@@ -500,9 +546,9 @@ def rsync(src_dir,
         dst_path = os.path.join(dst_root_abs, rel_path)
         _lg.debug("Rsync, creating: %s", rel_path)
         try:
-            copy_direntry(src_entry, dst_path)
-            yield rel_path, Actions.CREATE, ""
-        except OSError as exc:
+            digest = copy_direntry(src_entry, dst_path)
+            yield rel_path, Actions.CREATE, digest or ""
+        except (OSError, BackupCreationError) as exc:
             yield rel_path, Actions.ERROR, str(exc)
 
     # restore dir mtimes in dst, updated by updating files
@@ -513,19 +559,19 @@ def rsync(src_dir,
         dst_path = os.path.join(dst_root_abs, rel_path)
         src_stat = src_entry.stat(follow_symlinks=False)
         dst_stat = os.lstat(dst_path)
-        if src_stat.st_mtime != dst_stat.st_mtime:
+        if src_stat.st_mtime_ns != dst_stat.st_mtime_ns:
             _lg.debug("Rsync, restoring directory mtime: %s", dst_path)
             os.utime(dst_path,
-                     (src_stat.st_atime, src_stat.st_mtime),
+                     ns=(src_stat.st_atime_ns, src_stat.st_mtime_ns),
                      follow_symlinks=False)
 
     # restore dst_root dir mtime
     src_root_stat = os.lstat(src_root_abs)
     dst_root_stat = os.lstat(dst_root_abs)
-    if src_root_stat.st_mtime != dst_root_stat.st_mtime:
+    if src_root_stat.st_mtime_ns != dst_root_stat.st_mtime_ns:
         _lg.debug("Rsync, restoring root directory mtime: %s", dst_root_abs)
         os.utime(dst_root_abs,
-                 (src_root_stat.st_atime, src_root_stat.st_mtime),
+                 ns=(src_root_stat.st_atime_ns, src_root_stat.st_mtime_ns),
                  follow_symlinks=False)
 
 
@@ -580,7 +626,8 @@ def _recursive_hardlink(src: str, dst: str) -> bool:
                 except PermissionError:
                     _lg.debug("Cannot change ownership (not root): %s", ent_dst_path)
                 os.chmod(ent_dst_path, ent_stat.st_mode)
-                os.utime(ent_dst_path, (ent_stat.st_atime, ent_stat.st_mtime))
+                os.utime(ent_dst_path,
+                        ns=(ent_stat.st_atime_ns, ent_stat.st_mtime_ns))
 
                 continue
             if ent.is_file(follow_symlinks=False) or ent.is_symlink():
