@@ -581,17 +581,23 @@ class TestErrorRecovery:
 
         monkeypatch.setattr(fs, "hardlink_dir", failing_hardlink_dir)
 
-        # Try to create second backup (should fail)
-        bk.initiate_backup(
-            sources=[str(source_dir)],
-            backups_dir=str(backups_dir),
-            dry_run=False
-        )
+        # Try to create second backup (should fail loudly, never silently)
+        with pytest.raises(bk.BackupFailedError):
+            bk.initiate_backup(
+                sources=[str(source_dir)],
+                backups_dir=str(backups_dir),
+                dry_run=False
+            )
 
         # Only original backup should exist (failed backup cleaned up)
         backups = [b for b in os.listdir(str(backups_dir))
                    if not b.startswith(".")]
         assert len(backups) == 1
+
+        # No abandoned staging directory should remain either
+        staging_dirs = [d for d in os.listdir(str(backups_dir))
+                        if d.startswith(bk.STAGING_PREFIX)]
+        assert staging_dirs == []
 
         # Verify the remaining backup is the original one
         backup_path = os.path.join(str(backups_dir), backups[0])
@@ -632,17 +638,95 @@ class TestErrorRecovery:
 
         monkeypatch.setattr(fs, "rsync", failing_rsync)
 
-        # Try to create second backup (should fail and clean up)
+        # Try to create second backup (should fail loudly and clean up)
+        with pytest.raises(bk.BackupFailedError):
+            bk.initiate_backup(
+                sources=[str(source_dir)],
+                backups_dir=str(backups_dir),
+                dry_run=False
+            )
+
+        # Only original backup should exist
+        backups = [b for b in os.listdir(str(backups_dir))
+                   if not b.startswith(".")]
+        assert len(backups) == 1
+
+    def test_entry_level_error_action_is_fatal(
+            self, integration_dirs, monkeypatch
+    ):
+        """A single Actions.ERROR from rsync must fail the whole backup,
+        never be treated as a partial success."""
+        backups_dir, source_dir = integration_dirs
+
+        (source_dir / "file1.txt").write_text("content1")
         bk.initiate_backup(
             sources=[str(source_dir)],
             backups_dir=str(backups_dir),
             dry_run=False
         )
 
-        # Only original backup should exist
+        time.sleep(1.1)
+        (source_dir / "file2.txt").write_text("content2")
+
+        from curateipsum import fs
+
+        def erroring_rsync(src, dst, dry_run=False):
+            yield "file2.txt", fs.Actions.ERROR, "simulated copy error"
+
+        monkeypatch.setattr(fs, "rsync", erroring_rsync)
+
+        with pytest.raises(bk.BackupFailedError):
+            bk.initiate_backup(
+                sources=[str(source_dir)],
+                backups_dir=str(backups_dir),
+                dry_run=False
+            )
+
         backups = [b for b in os.listdir(str(backups_dir))
                    if not b.startswith(".")]
         assert len(backups) == 1
+
+    def test_abandoned_staging_dir_is_cleaned_up_on_startup(
+            self, integration_dirs
+    ):
+        """Stale .incomplete-* staging dirs from a crashed run must be
+        quarantined/removed before a new backup starts, and must never be
+        mistaken for a real backup."""
+        backups_dir, source_dir = integration_dirs
+        (source_dir / "file1.txt").write_text("content1")
+
+        stale_staging = backups_dir / f"{bk.STAGING_PREFIX}deadbeef"
+        stale_staging.mkdir()
+        (stale_staging / "leftover.txt").write_text("leftover")
+
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False
+        )
+
+        entries = os.listdir(str(backups_dir))
+        staging_dirs = [d for d in entries if d.startswith(bk.STAGING_PREFIX)]
+        assert staging_dirs == []
+
+        real_backups = [b for b in entries if not b.startswith(".")]
+        assert len(real_backups) == 1
+
+    def test_successful_backup_leaves_no_staging_dir(self, integration_dirs):
+        """A completed backup must be renamed atomically into place, no
+        .incomplete-* directory should be left behind."""
+        backups_dir, source_dir = integration_dirs
+        (source_dir / "file1.txt").write_text("content1")
+
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False
+        )
+
+        entries = os.listdir(str(backups_dir))
+        staging_dirs = [d for d in entries if d.startswith(bk.STAGING_PREFIX)]
+        assert staging_dirs == []
 
     def test_incomplete_backup_without_marker(self, integration_dirs):
         """Test that backups without marker are not counted as valid"""
@@ -755,11 +839,12 @@ class TestErrorRecovery:
 
         try:
             # Backup should fail due to hardlink failure
-            bk.initiate_backup(
-                sources=[str(source_dir)],
-                backups_dir=str(backups_dir),
-                dry_run=False
-            )
+            with pytest.raises(bk.BackupFailedError):
+                bk.initiate_backup(
+                    sources=[str(source_dir)],
+                    backups_dir=str(backups_dir),
+                    dry_run=False
+                )
         finally:
             # Lock should still exist (we manually acquired it)
             assert os.path.exists(lock_path)
@@ -819,11 +904,12 @@ class TestErrorRecovery:
 
         try:
             # Backup should fail
-            bk.initiate_backup(
-                sources=[str(source_dir)],
-                backups_dir=str(backups_dir),
-                dry_run=False
-            )
+            with pytest.raises(bk.BackupFailedError):
+                bk.initiate_backup(
+                    sources=[str(source_dir)],
+                    backups_dir=str(backups_dir),
+                    dry_run=False
+                )
         finally:
             # Lock still exists (we manually acquired it)
             assert os.path.exists(lock_path)
@@ -869,11 +955,12 @@ class TestErrorRecovery:
         monkeypatch.setattr(fs, "rsync", failing_rsync)
 
         # Run backup (will fail and attempt cleanup)
-        bk.initiate_backup(
-            sources=[str(source_dir)],
-            backups_dir=str(backups_dir),
-            dry_run=False
-        )
+        with pytest.raises(bk.BackupFailedError):
+            bk.initiate_backup(
+                sources=[str(source_dir)],
+                backups_dir=str(backups_dir),
+                dry_run=False
+            )
 
         # Verify cleanup was attempted (rmtree was called)
         assert len(rmtree_called) > 0

@@ -96,23 +96,28 @@ def main():
     if not backup.set_backups_lock(backups_dir_abs, args.force):
         return 1
 
-    # TODO add cleaning up from non-finished backups
-    backup.cleanup_old_backups(backups_dir=backups_dir_abs,
-                               dry_run=args.dry_run)
-    backup.initiate_backup(
-        sources=args.sources,
-        backups_dir=backups_dir_abs,
-        dry_run=args.dry_run,
-        external_rsync=args.external_rsync,
-        external_hardlink=args.external_hardlink,
-    )
-    backup.release_backups_lock(backups_dir_abs)
+    exit_code = 0
+    try:
+        backup.cleanup_old_backups(backups_dir=backups_dir_abs,
+                                   dry_run=args.dry_run)
+        backup.initiate_backup(
+            sources=args.sources,
+            backups_dir=backups_dir_abs,
+            dry_run=args.dry_run,
+            external_rsync=args.external_rsync,
+            external_hardlink=args.external_hardlink,
+        )
+    except backup.BackupFailedError as err:
+        _lg.error("Backup failed: %s", err)
+        exit_code = 1
+    finally:
+        backup.release_backups_lock(backups_dir_abs)
 
     end_time = time.time()
     spent_time = end_time - start_time
     _lg.info("Finished, time spent: %s", str(timedelta(seconds=spent_time)))
 
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":
