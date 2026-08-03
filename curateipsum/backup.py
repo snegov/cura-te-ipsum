@@ -1,13 +1,21 @@
 """
 Module with backup functions.
 """
-import fcntl
 import logging
 import os
 import shutil
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Iterable, Union
+
+try:
+    import fcntl
+except ImportError:
+    # Not available on Windows. cli.py's own platform check reports this
+    # cleanly before any locking function here is ever called; importing
+    # fcntl lazily/optionally lets that check run instead of crashing at
+    # `from curateipsum import backup` time.
+    fcntl = None
 
 from curateipsum import fs
 
@@ -88,13 +96,22 @@ def _date_from_backup(backup_entry: os.DirEntry) -> datetime:
 _held_locks: Dict[str, int] = {}
 
 
+_LOCK_METADATA_MAX_BYTES = 256
+
+
 def _read_lock_metadata(lock_file_path: str) -> str:
-    """Read raw lock file content for diagnostic logging. Never raises."""
+    """
+    Read lock file content for diagnostic logging only. Never raises, and
+    never trusted for anything beyond a human-readable log line: the read
+    is capped and newlines are stripped so a stale or forged lock file
+    can't inject bogus log lines or force an unbounded read.
+    """
     try:
         with open(lock_file_path, "r") as f:
-            return f.read().strip()
+            content = f.read(_LOCK_METADATA_MAX_BYTES)
     except OSError:
         return "<unreadable>"
+    return content.replace("\n", " ").replace("\r", " ").strip()
 
 
 def set_backups_lock(backups_dir: str,
@@ -111,6 +128,11 @@ def set_backups_lock(backups_dir: str,
       signal, or crash all release the kernel lock), then acquire it.
     """
     backups_dir_abs = os.path.abspath(backups_dir)
+    if backups_dir_abs in _held_locks:
+        _lg.error("This process already holds the backup lock for %s",
+                  backups_dir)
+        return False
+
     lock_file_path = os.path.join(backups_dir_abs, LOCK_FILE)
 
     fd = os.open(lock_file_path, os.O_CREAT | os.O_RDWR, 0o644)
@@ -130,12 +152,21 @@ def set_backups_lock(backups_dir: str,
         os.close(fd)
         return False
 
-    # Lock acquired: replace metadata, it belongs to us now.
-    os.ftruncate(fd, 0)
-    os.lseek(fd, 0, os.SEEK_SET)
-    metadata = "%d\n%s\n" % (os.getpid(), datetime.now().isoformat())
-    os.write(fd, metadata.encode())
-    os.fsync(fd)
+    # Lock acquired: replace metadata, it belongs to us now. If writing it
+    # fails, don't leave the lock held forever - release and report failure.
+    try:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        metadata = "%d\n%s\n" % (os.getpid(), datetime.now().isoformat())
+        os.write(fd, metadata.encode())
+        os.fsync(fd)
+    except OSError as err:
+        _lg.error("Failed to write backup lock metadata: %s", err)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+        return False
 
     _held_locks[backups_dir_abs] = fd
     return True

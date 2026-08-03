@@ -478,6 +478,25 @@ class TestBackupLock:
         # Should not raise any exception
         bk.release_backups_lock(str(backup_dir))
 
+    def test_reacquiring_own_lock_does_not_leak_fd(self, backup_dir):
+        """
+        A second set_backups_lock() call for a directory this process
+        already holds must fail cleanly instead of silently overwriting
+        the tracked descriptor (which would leak the original fd and let
+        release_backups_lock() close only the newest one, unlocking
+        nothing).
+        """
+        backup_dir.mkdir()
+        assert bk.set_backups_lock(str(backup_dir))
+        try:
+            assert not bk.set_backups_lock(str(backup_dir))
+        finally:
+            bk.release_backups_lock(str(backup_dir))
+
+        # The lock must be fully free after a single release.
+        assert bk.set_backups_lock(str(backup_dir))
+        bk.release_backups_lock(str(backup_dir))
+
     def test_release_only_releases_own_lock(self, backup_dir):
         """
         release_backups_lock() must only release a lock this process
