@@ -441,6 +441,33 @@ class TestLockHandling:
 
         m_release.assert_called_once_with(str(backups_dir))
 
+    def test_releases_lock_and_exits_nonzero_after_failed_backup(
+            self, tmp_path):
+        """Should still release lock and return nonzero exit code when
+        initiate_backup raises BackupFailedError."""
+        backups_dir = tmp_path / "backups"
+        backups_dir.mkdir()
+        source = tmp_path / "src"
+        source.mkdir()
+
+        from curateipsum import backup
+
+        with mock.patch('sys.argv', ['cura-te-ipsum', '-b',
+                                      str(backups_dir), str(source)]):
+            with mock.patch('curateipsum.backup.set_backups_lock',
+                            return_value=True):
+                with mock.patch('curateipsum.backup.cleanup_old_backups'):
+                    with mock.patch(
+                            'curateipsum.backup.initiate_backup',
+                            side_effect=backup.BackupFailedError("boom")):
+                        with mock.patch(
+                            'curateipsum.backup.release_backups_lock') \
+                                as m_release:
+                            result = cli.main()
+
+        assert result == 1
+        m_release.assert_called_once_with(str(backups_dir))
+
 
 class TestBackupExecution:
     """Test backup execution flow."""
