@@ -635,3 +635,77 @@ class TestRsyncExt:
             assert results[2][0] == "config.json"
             assert results[3][0] == "existing.txt"
             assert results[4][0] == "old/"
+
+
+class TestRsyncHardlinkImmutability:
+    """
+    Regression tests: rsync() is run against a staging directory that
+    was populated by hardlinking in the previous, completed snapshot
+    (curateipsum.backup.hardlink_dir). Any in-place metadata change made
+    while updating staging must never mutate that previous snapshot's
+    files via the shared inode.
+    """
+
+    def test_permission_change_does_not_mutate_shared_hardlink(
+            self, common_fs_dirs, tmp_path
+    ):
+        src_dir, dst_dir = common_fs_dirs
+        # Independent source file with new content/mtime but the SAME
+        # eventual permissions the old snapshot file already has - only
+        # the fallback "update permissions and ownership" branch should
+        # fire, not a full rewrite (which would already be safe via
+        # rm+recreate).
+        src_fpath = create_file(str(src_dir))
+        os.chmod(src_fpath, 0o600)
+
+        # Simulate staging (dst_dir) having been hardlinked in from the
+        # previous, completed snapshot: a separate directory tree outside
+        # dst_dir, sharing an inode with the staging file, with content
+        # and mtime matching src (so only permissions differ) but the old
+        # mode.
+        dst_fpath = os.path.join(str(dst_dir),
+                                 relpath(src_fpath, str(src_dir), str(dst_dir)))
+        prior_snapshot_fpath = str(tmp_path / "prior_snapshot")
+        with open(src_fpath) as src_f:
+            src_content = src_f.read()
+        with open(prior_snapshot_fpath, "w") as f:
+            f.write(src_content)
+        os.chmod(prior_snapshot_fpath, 0o644)
+        src_stat = os.lstat(src_fpath)
+        os.utime(prior_snapshot_fpath, (src_stat.st_atime, src_stat.st_mtime))
+        os.link(prior_snapshot_fpath, dst_fpath)
+        prior_mode_before = os.lstat(prior_snapshot_fpath).st_mode
+        dst_mtime_before = os.lstat(dst_fpath).st_mtime
+        assert os.lstat(dst_fpath).st_ino == os.lstat(
+            prior_snapshot_fpath).st_ino  # sanity: genuinely shared
+
+        all(fs.rsync(str(src_dir), str(dst_dir)))
+
+        assert os.lstat(dst_fpath).st_mode == os.lstat(src_fpath).st_mode
+        assert os.lstat(prior_snapshot_fpath).st_mode == prior_mode_before
+        # dst must now have its own inode, no longer shared
+        assert os.lstat(dst_fpath).st_ino != os.lstat(
+            prior_snapshot_fpath).st_ino
+        # breaking the hardlink must not, as a side effect, reset mtime:
+        # rsync only intended to change permissions here (content/mtime
+        # already matched), and uid/gid are identical for this test user
+        # so the chown branch never fires to "accidentally" fix ownership
+        assert os.lstat(dst_fpath).st_mtime == dst_mtime_before
+
+    def test_symlink_metadata_never_touches_external_target(
+            self, common_fs_dirs, tmp_path
+    ):
+        src_dir, dst_dir = common_fs_dirs
+        external_target = tmp_path / "external_target"
+        external_target.mkdir()
+        (external_target / "canary").write_text("do-not-touch")
+        external_mode_before = os.lstat(str(external_target)).st_mode
+
+        link_name = "a_symlink"
+        os.symlink(str(external_target), os.path.join(str(src_dir), link_name))
+        os.symlink(str(external_target), os.path.join(str(dst_dir), link_name))
+
+        all(fs.rsync(str(src_dir), str(dst_dir)))
+
+        assert os.lstat(str(external_target)).st_mode == external_mode_before
+        assert (external_target / "canary").read_text() == "do-not-touch"

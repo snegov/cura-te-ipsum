@@ -285,6 +285,32 @@ class TestCopyDirEntry:
         dst_stat = os.lstat(dst_path)
         assert dst_stat.st_mode == src_stat.st_mode
 
+    def test_copy_symlink_to_directory_stays_a_symlink(self, tmp_path):
+        """
+        Regression: is_dir()/is_file() default to follow_symlinks=True,
+        so a symlink pointing at a directory must be classified via
+        is_symlink() first, or it gets misclassified as a directory and
+        an empty real directory is created in its place - silently
+        destroying the symlink and losing its target entirely.
+        """
+        target_dir = os.path.join(str(tmp_path), "target_dir")
+        src_link = os.path.join(str(tmp_path), "source_link")
+        dst_link = os.path.join(str(tmp_path), "dest_link")
+
+        os.mkdir(target_dir)
+        with open(os.path.join(target_dir, "canary"), "w") as f:
+            f.write("content")
+        os.symlink(target_dir, src_link)
+
+        with os.scandir(str(tmp_path)) as it:
+            for entry in it:
+                if entry.name == "source_link":
+                    fs.copy_direntry(entry, dst_link)
+                    break
+
+        assert os.path.islink(dst_link)
+        assert os.readlink(dst_link) == target_dir
+
     def test_copy_symlink_preserves_times_if_supported(self, tmp_path):
         """Test that symlink timestamps are preserved (OS-dependent)"""
         target_path = os.path.join(str(tmp_path), "target.txt")

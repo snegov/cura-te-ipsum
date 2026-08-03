@@ -43,10 +43,10 @@ Acceptance criteria:
 
 ### Preserve symlinks and old-snapshot immutability
 
-- [ ] Classify entries with `lstat()` and process symlinks before directories.
-- [ ] Never follow symlinks while applying symlink metadata.
-- [ ] Break shared hardlinks before changing mode, ownership, flags, or times.
-- [ ] Define copy-on-write invariants for every mutation.
+- [x] Classify entries with `lstat()` and process symlinks before directories.
+- [x] Never follow symlinks while applying symlink metadata.
+- [x] Break shared hardlinks before changing mode, ownership, flags, or times.
+- [x] Define copy-on-write invariants for every mutation.
 
 Acceptance criteria:
 

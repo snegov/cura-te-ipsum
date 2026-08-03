@@ -8,6 +8,7 @@ import logging
 import os
 import subprocess
 import sys
+import uuid
 from typing import Iterable, Tuple, Union
 
 _lg = logging.getLogger(__name__)
@@ -243,15 +244,58 @@ def copy_file(src, dst):
                 pass
 
 
+def _break_shared_hardlink(path: str):
+    """
+    Give `path` a private inode if it currently shares one with another
+    file (nlink > 1), so a subsequent in-place metadata change (chmod,
+    chown, utime, flags) can never mutate that other file. Files copied
+    into a staging directory via hardlink_dir() start out hardlinked to
+    the previous snapshot; this is the copy-on-write step that keeps
+    that previous, completed snapshot immutable.
+
+    The break itself must be metadata-neutral: copy_file() only carries
+    over the mode at file-creation time, not ownership or timestamps, so
+    the new private copy is explicitly restored to the original's full
+    stat before it replaces `path` - otherwise a caller that only meant
+    to update permissions would silently also reset ownership/mtime as a
+    side effect of this implementation detail.
+    """
+    st = os.lstat(path)
+    if st.st_nlink <= 1:
+        return
+    tmp_path = "%s.cow-%d-%s" % (path, os.getpid(), uuid.uuid4().hex[:8])
+    try:
+        copy_file(path, tmp_path)
+        try:
+            os.chown(tmp_path, st.st_uid, st.st_gid)
+        except PermissionError:
+            _lg.debug("Cannot preserve ownership while breaking hardlink "
+                      "(not root): %s", path)
+        os.chmod(tmp_path, st.st_mode)
+        os.utime(tmp_path, (st.st_atime, st.st_mtime))
+        os.replace(tmp_path, path)
+    except OSError:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def copy_direntry(entry: Union[os.DirEntry, PseudoDirEntry], dst_path):
     """ Non-recursive DirEntry (file/dir/symlink) copy. """
     src_stat = entry.stat(follow_symlinks=False)
-    if entry.is_dir():
-        os.mkdir(dst_path)
-
-    elif entry.is_symlink():
+    # Classify with lstat semantics and check symlink-ness first: is_dir()
+    # (and is_file()) default to follow_symlinks=True, so a symlink
+    # pointing at a directory would otherwise be misclassified as a
+    # directory here and get an empty directory created in its place,
+    # silently losing the symlink and its target.
+    if entry.is_symlink():
         link_target = os.readlink(entry.path)
         os.symlink(link_target, dst_path)
+
+    elif entry.is_dir(follow_symlinks=False):
+        os.mkdir(dst_path)
 
     else:
         copy_file(entry.path, dst_path)
@@ -416,6 +460,26 @@ def rsync(src_dir,
                     yield rel_path, Actions.ERROR, str(exc)
                 continue
 
+        # Symlinks reaching here already have a matching target (handled
+        # above), and applying chmod/chown to a symlink path without
+        # follow_symlinks=False support would silently modify whatever
+        # the symlink points to - including a target outside the backup
+        # entirely. There's nothing meaningful left to sync for them.
+        if src_entry.is_symlink():
+            continue
+
+        # A regular file reaching here is unchanged in content, but may
+        # still be hardlinked to the same file in the previous, supposedly
+        # immutable snapshot (hardlink_dir() links unchanged files in at
+        # the start of every backup to save space). Break that link
+        # before mutating permissions/ownership in place, or the change
+        # would silently apply to every older snapshot sharing the inode.
+        if src_entry.is_file(follow_symlinks=False):
+            if src_stat.st_mode != dst_stat.st_mode or (
+                    src_stat.st_uid != dst_stat.st_uid
+                    or src_stat.st_gid != dst_stat.st_gid):
+                _break_shared_hardlink(dst_entry.path)
+
         # update permissions and ownership
         if src_stat.st_mode != dst_stat.st_mode:
             _lg.debug("Rsync, updating permissions: %s", rel_path)
@@ -443,7 +507,7 @@ def rsync(src_dir,
 
     # restore dir mtimes in dst, updated by updating files
     for src_entry in scantree(src_root_abs, dir_first=True):
-        if not src_entry.is_dir():
+        if not src_entry.is_dir(follow_symlinks=False):
             continue
         rel_path = src_entry.path[len(src_root_abs) + 1:]
         dst_path = os.path.join(dst_root_abs, rel_path)
