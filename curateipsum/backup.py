@@ -7,7 +7,6 @@ import os
 import shutil
 import signal
 import time
-import uuid
 from datetime import datetime, timedelta
 from typing import Optional, Iterable, Union
 
@@ -194,9 +193,12 @@ def set_backup_marker(backup_entry: Union[os.DirEntry, fs.PseudoDirEntry]):
         open(backup_marker.path, "a").close()
 
 
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+
+
 def _fsync_dir(path: str):
     """Fsync a directory so its content is durable before it is renamed."""
-    dir_fd = os.open(path, os.O_RDONLY)
+    dir_fd = os.open(path, os.O_RDONLY | _O_DIRECTORY)
     try:
         os.fsync(dir_fd)
     finally:
@@ -205,11 +207,17 @@ def _fsync_dir(path: str):
 
 def _reserve_snapshot_name(backups_dir: str) -> str:
     """
-    Return a snapshot name that doesn't collide with an existing entry.
-    Guards against two backups started within the same second.
+    Return a snapshot name that doesn't collide with an existing entry or
+    an in-progress staging directory. Guards against two backups started
+    within the same second.
     """
+    def _taken(candidate: str) -> bool:
+        return (os.path.lexists(os.path.join(backups_dir, candidate))
+                or os.path.lexists(os.path.join(
+                    backups_dir, f"{STAGING_PREFIX}{candidate}")))
+
     name = datetime.now().strftime(BACKUP_ENT_FMT)
-    while os.path.lexists(os.path.join(backups_dir, name)):
+    while _taken(name):
         time.sleep(1)
         name = datetime.now().strftime(BACKUP_ENT_FMT)
     return name
@@ -404,7 +412,13 @@ def initiate_backup(sources,
     if latest_backup is None:
         _lg.info("Creating empty staging directory for backup: %s",
                  snapshot_name)
-        os.mkdir(staging.path)
+        try:
+            os.mkdir(staging.path)
+        except OSError as err:
+            raise BackupFailedError(
+                "Failed to create staging directory %s: %s"
+                % (staging.path, err)
+            ) from err
 
     else:
         _lg.info("Copying data from latest backup %s to staging for %s",
@@ -459,12 +473,17 @@ def initiate_backup(sources,
                     )
                 # raise flag if something was changed since last backup
                 backup_changed = True
-    except (fs.BackupCreationError, BackupFailedError) as err:
+    except fs.BackupCreationError as err:
         _lg.error("Error during backup creation: %s", err)
         _lg.error("Failed to create backup %s, removing staging directory",
                   snapshot_name)
         shutil.rmtree(staging.path, ignore_errors=True)
         raise BackupFailedError(str(err)) from err
+    except BackupFailedError:
+        _lg.error("Failed to create backup %s, removing staging directory",
+                  snapshot_name)
+        shutil.rmtree(staging.path, ignore_errors=True)
+        raise
 
     # do not create backup on dry-run
     if dry_run:
@@ -481,10 +500,16 @@ def initiate_backup(sources,
     # write and fsync completion marker only after every source succeeded,
     # then atomically rename the staging dir into its final snapshot name
     marker_name = "%s_%s" % (BACKUP_MARKER, snapshot_name)
-    open(os.path.join(staging.path, marker_name), "a").close()
+    marker_fd = os.open(os.path.join(staging.path, marker_name),
+                        os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        os.fsync(marker_fd)
+    finally:
+        os.close(marker_fd)
     _fsync_dir(staging.path)
 
     final_path = os.path.join(backups_dir, snapshot_name)
     os.rename(staging.path, final_path)
+    _fsync_dir(backups_dir)
     _lg.info("Backup created: %s", snapshot_name)
     return fs.PseudoDirEntry(final_path)
