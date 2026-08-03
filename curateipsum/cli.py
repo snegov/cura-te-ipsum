@@ -105,8 +105,11 @@ def main():
 
     exit_code = 0
     try:
-        backup.cleanup_old_backups(backups_dir=backups_dir_abs,
-                                   dry_run=args.dry_run)
+        # Retention deletes old snapshots, so it must only run once the
+        # new snapshot is durable and complete - never before, and never
+        # if the backup below raised. Running it first (or unconditionally
+        # after a failure) would let a failed backup destroy history
+        # that a successful one would have covered.
         backup.initiate_backup(
             sources=args.sources,
             backups_dir=backups_dir_abs,
@@ -114,6 +117,8 @@ def main():
             external_rsync=args.external_rsync,
             external_hardlink=args.external_hardlink,
         )
+        backup.cleanup_old_backups(backups_dir=backups_dir_abs,
+                                   dry_run=args.dry_run)
     except backup.BackupFailedError as err:
         _lg.error("Backup failed: %s", err)
         exit_code = 1

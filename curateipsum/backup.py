@@ -548,62 +548,102 @@ def cleanup_old_backups(backups_dir: str,
             .strftime(BACKUP_ENT_FMT)
         )
 
+    keep = _compute_retention_plan(all_backups, thresholds)
+    # Validate the plan before deleting anything: the most recent snapshot
+    # must always survive, and the plan can never invent a backup that
+    # doesn't exist.
+    assert all_backups[0] in keep, "retention plan drops the latest snapshot"
+    assert keep <= set(all_backups), "retention plan keeps a phantom backup"
+
     backups_dir_abs = _canonical(backups_dir)
     repo_id = _ensure_repo_id(backups_dir)
 
-    prev_backup = all_backups[0]
-    to_remove = {b: False for b in all_backups}
-
-    for backup in all_backups[1:]:
-        # skip all backups made after threshold
-        if backup.name > thresholds["all"]:
-            prev_backup = backup
-            continue
-
-        # leave only one backup per day for backups made after threshold
-        if backup.name > thresholds["daily"]:
-            if (_date_from_backup(prev_backup).date()
-                    == _date_from_backup(backup).date()):
-                to_remove[prev_backup] = True
-            prev_backup = backup
-            continue
-
-        # leave only one backup per week for backups made after threshold
-        if backup.name > thresholds["weekly"]:
-            if (_date_from_backup(prev_backup).isocalendar()[1]
-                    == _date_from_backup(backup).isocalendar()[1]):
-                to_remove[prev_backup] = True
-            prev_backup = backup
-            continue
-
-        # leave only one backup per month for backups made after threshold
-        if backup.name > thresholds["monthly"]:
-            if (_date_from_backup(prev_backup).date().replace(day=1)
-                    == _date_from_backup(backup).date().replace(day=1)):
-                to_remove[prev_backup] = True
-            prev_backup = backup
-            continue
-
-        # leave only one backup per year for backups made after threshold
-        if backup.name > thresholds["yearly"]:
-            if (_date_from_backup(prev_backup).date().replace(month=1, day=1)
-                    == _date_from_backup(backup).date().replace(month=1, day=1)):
-                to_remove[prev_backup] = True
-            prev_backup = backup
-            continue
-
-        to_remove[backup] = True
-
-    for backup, do_delete in to_remove.items():
-        if not do_delete:
+    for backup in all_backups:
+        if backup in keep:
             continue
         if dry_run:
             _lg.info("Would remove old backup %s", backup.name)
             continue
-        if not _verify_safe_to_delete(backup, backups_dir_abs, repo_id):
-            continue
-        _lg.info("Removing old backup %s", backup.name)
-        shutil.rmtree(backup.path)
+        _quarantine_and_delete(backup, backups_dir_abs, repo_id)
+
+
+def _compute_retention_plan(all_backups: List[os.DirEntry],
+                            thresholds: Dict[str, str]) -> set:
+    """
+    Compute the set of backups to retain. Each tier's retained set is
+    computed independently from its own name range and unioned with the
+    rest, so a coarser tier (e.g. monthly) can never override a decision
+    a finer tier (e.g. weekly) already made about a backup that isn't
+    even in the coarser tier's range - unlike carrying a single "previous
+    backup compared against" value across tier boundaries, which is what
+    let a coarser tier silently evict a backup a finer tier had decided
+    to keep.
+    """
+    def _oldest_per_group(members, key_func) -> set:
+        groups: Dict[object, os.DirEntry] = {}
+        for member in members:
+            key = key_func(member)
+            if key not in groups or member.name < groups[key].name:
+                groups[key] = member
+        return set(groups.values())
+
+    def _band(lower: str, upper: str) -> List[os.DirEntry]:
+        return [b for b in all_backups if lower < b.name <= upper]
+
+    keep = {all_backups[0]}  # the most recent snapshot is always retained
+
+    keep |= {b for b in all_backups if b.name > thresholds["all"]}
+
+    keep |= _oldest_per_group(
+        _band(thresholds["daily"], thresholds["all"]),
+        lambda b: _date_from_backup(b).date(),
+    )
+
+    keep |= _oldest_per_group(
+        _band(thresholds["weekly"], thresholds["daily"]),
+        # (ISO year, ISO week): ISO week alone collides across years, and
+        # a year spanning ISO week 53 puts late-December dates in the
+        # next ISO year - isocalendar() already accounts for both.
+        lambda b: _date_from_backup(b).isocalendar()[:2],
+    )
+
+    keep |= _oldest_per_group(
+        _band(thresholds["monthly"], thresholds["weekly"]),
+        lambda b: (_date_from_backup(b).year, _date_from_backup(b).month),
+    )
+
+    keep |= _oldest_per_group(
+        _band(thresholds["yearly"], thresholds["monthly"]),
+        lambda b: _date_from_backup(b).year,
+    )
+
+    return keep
+
+
+def _quarantine_and_delete(entry: os.DirEntry, backups_dir_abs: str,
+                           repo_id: str):
+    """
+    Quarantine a retention deletion candidate before recursively removing
+    it: rename it out of its snapshot name first. If the process crashes
+    between the rename and the removal, the quarantined directory keeps
+    the staging-dir prefix, so the existing stale-staging-dir cleanup -
+    with the same boundary/mount/symlink safety checks - finishes
+    removing it on the next run, rather than leaving a half-deleted
+    directory sitting under its original snapshot name.
+    """
+    if not _verify_safe_to_delete(entry, backups_dir_abs, repo_id):
+        return
+    quarantine_path = os.path.join(
+        backups_dir_abs, "%strash-%s" % (STAGING_PREFIX, entry.name)
+    )
+    try:
+        os.rename(entry.path, quarantine_path)
+    except OSError as err:
+        _lg.error("Failed to quarantine %s before deletion: %s",
+                  entry.path, err)
+        return
+    _lg.info("Removing old backup %s", entry.name)
+    shutil.rmtree(quarantine_path, ignore_errors=True)
 
 
 def process_backed_entry(backup_dir: str,

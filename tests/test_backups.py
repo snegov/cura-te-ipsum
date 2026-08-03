@@ -105,7 +105,7 @@ class TestBackupCleanup:
         """Test threshold for keeping weekly backups"""
         mock_datetime.now.return_value = datetime(2021, 11, 11)
         backups = [
-            add_backup("20211111_0300"),  # remove, not first weekly (Thu)
+            add_backup("20211111_0300"),  # keep, latest snapshot always kept
             add_backup("20211110_0300"),  # remove, not first weekly (Wed)
             add_backup("20211108_0100"),  # keep, first weekly 2021-11-08 (Mon)
             add_backup("20211107_2300"),  # remove, not first weekly (Sun)
@@ -122,8 +122,8 @@ class TestBackupCleanup:
             add_backup("20211002_0100"),  # remove, older than 5 weeks
 
         ]
-        expected_backups = [backups[2], backups[4], backups[6],
-                            backups[9], backups[12]]
+        expected_backups = [backups[0], backups[2], backups[4],
+                            backups[6], backups[9], backups[12]]
         run_cleanup(keep_weekly=5)
         check_backups(expected_backups)
 
@@ -133,12 +133,12 @@ class TestBackupCleanup:
         """Test threshold for keeping weekly backups"""
         mock_datetime.now.return_value = datetime(2021, 11, 11)
         backups = [
-            add_backup("20211111_0300"),  # remove, not first weekly (Thu)
+            add_backup("20211111_0300"),  # keep, latest snapshot always kept
             add_backup("20211110_0300"),  # keep, first weekly (Wed)
             add_backup("20211107_0100"),  # remove, not first weekly (Sun)
             add_backup("20211102_0100"),  # keep, first weekly (Tue)
         ]
-        expected_backups = [backups[1], backups[3]]
+        expected_backups = [backups[0], backups[1], backups[3]]
         run_cleanup(keep_weekly=5)
         check_backups(expected_backups)
 
@@ -169,7 +169,7 @@ class TestBackupCleanup:
         """Test threshold for keeping yearly backups"""
         mock_datetime.now.return_value = datetime(2021, 11, 11)
         backups = [
-            add_backup("20211103_0300"),  # remove, not first yearly in 2021
+            add_backup("20211103_0300"),  # keep, latest snapshot always kept
             add_backup("20210810_0000"),  # remove, not first yearly in 2021
             add_backup("20210716_0100"),  # keep, first yearly in 2021
             add_backup("20201216_0100"),  # remove, not first yearly in 2020
@@ -181,7 +181,8 @@ class TestBackupCleanup:
             add_backup("20171116_0100"),  # remove, older than 3 years
             add_backup("20171115_0100"),  # remove, older than 3 years
         ]
-        expected_backups = [backups[2], backups[4], backups[6], backups[8]]
+        expected_backups = [backups[0], backups[2], backups[4], backups[6],
+                            backups[8]]
         run_cleanup(keep_yearly=3)
         check_backups(expected_backups)
 
@@ -200,8 +201,6 @@ class TestBackupCleanup:
         run_cleanup(keep_all=2, dry_run=True)
         check_backups(backups)
 
-    @pytest.mark.xfail(reason="Bug #32: coarser retention tiers override finer "
-                              "tiers, violating retention guarantees", strict=True)
     @mock.patch(f"{bk.__name__}.datetime", wraps=datetime)
     def test_combined_retention_policies(self, mock_datetime, add_backup,
                                           run_cleanup, check_backups):
@@ -333,13 +332,12 @@ class TestBackupCleanup:
             add_backup("20201228_1200"),  # Mon, ISO 2020-W53
         ]
 
-        # Keep one week: should keep oldest backup from ISO week 53
-        expected = [backups[5]]  # 20201228
+        # Keep one week: should keep oldest backup from ISO week 53, plus
+        # the latest snapshot overall (always kept)
+        expected = [backups[0], backups[5]]  # 20210103, 20201228
         run_cleanup(keep_weekly=1)
         check_backups(expected)
 
-    @pytest.mark.xfail(reason="Bug #33: Weekly retention bug: same ISO week "
-                              "number across years treated as duplicates", strict=True)
     @mock.patch(f"{bk.__name__}.datetime", wraps=datetime)
     def test_iso_week_number_across_years(self, mock_datetime, add_backup,
                                            run_cleanup, check_backups):
@@ -383,8 +381,9 @@ class TestBackupCleanup:
             add_backup("20250112_1200"),    # Sun, ISO 2025-W02
         ]
 
-        # Keep weekly: oldest from week 1 (Dec 30) and week 2 (Jan 8)
-        expected = [backups[0], backups[4]]
+        # Keep weekly: oldest from week 1 (Dec 30) and week 2 (Jan 8), plus
+        # the latest snapshot overall (always kept)
+        expected = [backups[0], backups[4], backups[5]]
         run_cleanup(keep_weekly=10)
         check_backups(expected)
 
@@ -931,3 +930,44 @@ class TestDeletionBoundarySafety:
         run_cleanup(keep_all=0)
 
         assert not os.path.exists(old.path)
+
+
+class TestRetentionPlan:
+    """Tests for the independent-per-tier retention plan computation."""
+
+    def test_latest_snapshot_always_retained_even_if_grouped_with_next(
+            self, backup_dir, add_backup, run_cleanup
+    ):
+        """
+        Regression for the bug where the latest snapshot could be
+        evicted if it shared a weekly/monthly/yearly bucket with the
+        next-newest one, because retention carried a single "previous
+        backup" comparison across tier boundaries.
+        """
+        latest = add_backup("20211111_0300")
+        add_backup("20211110_0300")  # same ISO week as latest
+        add_backup("20211004_0100")
+
+        run_cleanup(keep_weekly=5)
+
+        assert os.path.isdir(latest.path)
+
+    def test_quarantined_dir_recovered_by_stale_staging_cleanup(
+            self, backup_dir, add_backup
+    ):
+        """
+        If a crash happens between quarantine (rename) and the recursive
+        delete, the quarantined directory must still get cleaned up on
+        the next startup via cleanup_stale_staging_dirs.
+        """
+        add_backup("20220101_0000")
+        old = add_backup("20200101_0000")
+
+        quarantine_path = os.path.join(
+            str(backup_dir), f"{bk.STAGING_PREFIX}trash-{old.name}"
+        )
+        os.rename(old.path, quarantine_path)
+
+        bk.cleanup_stale_staging_dirs(str(backup_dir))
+
+        assert not os.path.exists(quarantine_path)
