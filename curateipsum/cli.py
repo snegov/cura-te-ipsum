@@ -44,7 +44,8 @@ def main():
     parser.add_argument("-f", "--force",
                         action="store_true",
                         default=False,
-                        help="Force run when previous backup is still in process")
+                        help="Wait for previous backup to finish instead of "
+                             "exiting immediately if one is still running")
     parser.add_argument("--external-rsync",
                         action="store_true",
                         default=False,

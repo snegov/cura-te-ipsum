@@ -1,14 +1,21 @@
 """
 Module with backup functions.
 """
-import errno
 import logging
 import os
 import shutil
-import signal
 import time
 from datetime import datetime, timedelta
-from typing import Optional, Iterable, Union
+from typing import Dict, Optional, Iterable, Union
+
+try:
+    import fcntl
+except ImportError:
+    # Not available on Windows. cli.py's own platform check reports this
+    # cleanly before any locking function here is ever called; importing
+    # fcntl lazily/optionally lets that check run instead of crashing at
+    # `from curateipsum import backup` time.
+    fcntl = None
 
 from curateipsum import fs
 
@@ -81,109 +88,115 @@ def _date_from_backup(backup_entry: os.DirEntry) -> datetime:
     return datetime.strptime(backup_entry.name, BACKUP_ENT_FMT)
 
 
-def _pid_exists(pid: int) -> bool:
-    """Check whether pid exists in the current process table."""
-    if pid == 0:
-        # According to "man 2 kill" PID 0 has a special meaning:
-        # it refers to <<every process in the process group of the
-        # calling process>> so we don't want to go any further.
-        # If we get here it means this UNIX platform *does* have
-        # a process with id 0.
-        return True
+# Open lock file descriptors currently held by this process, keyed by the
+# absolute path of the backups directory they lock. The kernel associates
+# an flock() with this exact open file description, so the descriptor must
+# stay open for the full duration of the operation: closing it (including
+# on process crash or signal) is what releases the lock.
+_held_locks: Dict[str, int] = {}
+
+
+_LOCK_METADATA_MAX_BYTES = 256
+
+
+def _read_lock_metadata(lock_file_path: str) -> str:
+    """
+    Read lock file content for diagnostic logging only. Never raises, and
+    never trusted for anything beyond a human-readable log line: the read
+    is capped and newlines are stripped so a stale or forged lock file
+    can't inject bogus log lines or force an unbounded read.
+    """
     try:
-        os.kill(pid, 0)
-    except OSError as err:
-        if err.errno == errno.ESRCH:
-            # ESRCH == No such process
-            return False
-        elif err.errno == errno.EPERM:
-            # EPERM clearly means there's a process to deny access to
-            return True
-        else:
-            # According to "man 2 kill" possible error values are
-            # (EINVAL, EPERM, ESRCH) therefore we should never get
-            # here. If we do let's be explicit in considering this
-            # an error.
-            raise err
-    else:
-        return True
+        with open(lock_file_path, "r") as f:
+            content = f.read(_LOCK_METADATA_MAX_BYTES)
+    except OSError:
+        return "<unreadable>"
+    return content.replace("\n", " ").replace("\r", " ").strip()
 
 
 def set_backups_lock(backups_dir: str,
                      force: bool = False) -> bool:
     """
-    Set lock file to prevent multiple backups running at the same time.
-    Lock file contains PID of the process that created it.
-    Return false if previous backup is still running and force flag is not set.
+    Acquire an exclusive kernel (flock) lock to prevent multiple backups
+    running at the same time. The lock file also holds the PID and start
+    time of the holder, kept for diagnostics only - they play no part in
+    deciding whether the lock can be acquired.
+
+    If another process already holds the lock:
+    - with force=False, return False immediately.
+    - with force=True, block until that process releases it (normal exit,
+      signal, or crash all release the kernel lock), then acquire it.
     """
-    lock_file_path = os.path.join(backups_dir, LOCK_FILE)
-
-    # Try to create lock file atomically
-    try:
-        fd = os.open(lock_file_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        return True
-    except FileExistsError:
-        # Lock file already exists, check if process is still running
-        pass
-
-    # Read existing lock file
-    try:
-        with open(lock_file_path, "r") as f:
-            content = f.read().strip()
-            if not content:
-                raise ValueError("Lock file is empty")
-            pid = int(content)
-    except (ValueError, IOError) as e:
-        _lg.warning("Corrupted lock file (%s), removing and retrying", e)
-        try:
-            os.unlink(lock_file_path)
-        except OSError:
-            pass
-        return set_backups_lock(backups_dir, force)
-
-    if _pid_exists(pid):
-        if not force:
-            _lg.warning(
-                "Previous backup is still in progress (PID: %d), exiting", pid
-            )
-            return False
-
-        _lg.warning(
-            "Previous backup is still in progress (PID: %d), "
-            "but force flag is set, attempting graceful termination", pid
-        )
-        # Try SIGTERM first for graceful shutdown
-        try:
-            os.kill(pid, signal.SIGTERM)
-            _lg.info("Sent SIGTERM to process %d, waiting 5 seconds", pid)
-            time.sleep(5)
-
-            # Check if process is still running
-            if _pid_exists(pid):
-                _lg.warning("Process %d did not terminate, sending SIGKILL", pid)
-                os.kill(pid, signal.SIGKILL)
-                time.sleep(1)  # Brief wait for SIGKILL to take effect
-        except OSError as e:
-            _lg.error("Failed to kill process %d: %s", pid, e)
-            return False
-
-    # Remove stale lock file and retry
-    try:
-        os.unlink(lock_file_path)
-    except OSError as e:
-        _lg.error("Failed to remove lock file: %s", e)
+    backups_dir_abs = os.path.abspath(backups_dir)
+    if backups_dir_abs in _held_locks:
+        _lg.error("This process already holds the backup lock for %s",
+                  backups_dir)
         return False
 
-    return set_backups_lock(backups_dir, force)
+    lock_file_path = os.path.join(backups_dir_abs, LOCK_FILE)
+
+    fd = os.open(lock_file_path, os.O_CREAT | os.O_RDWR, 0o644)
+
+    flock_flags = fcntl.LOCK_EX if force else fcntl.LOCK_EX | fcntl.LOCK_NB
+    try:
+        fcntl.flock(fd, flock_flags)
+    except BlockingIOError:
+        held_by = _read_lock_metadata(lock_file_path)
+        _lg.warning(
+            "Previous backup is still in progress (%s), exiting", held_by
+        )
+        os.close(fd)
+        return False
+    except OSError as err:
+        _lg.error("Failed to acquire backup lock: %s", err)
+        os.close(fd)
+        return False
+
+    # Lock acquired: replace metadata, it belongs to us now. If writing it
+    # fails, don't leave the lock held forever - release and report failure.
+    try:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        metadata = "%d\n%s\n" % (os.getpid(), datetime.now().isoformat())
+        os.write(fd, metadata.encode())
+        os.fsync(fd)
+    except OSError as err:
+        _lg.error("Failed to write backup lock metadata: %s", err)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+        return False
+
+    _held_locks[backups_dir_abs] = fd
+    return True
 
 
 def release_backups_lock(backups_dir: str):
-    """Remove lock file."""
-    lock_file_path = os.path.join(backups_dir, LOCK_FILE)
-    if os.path.exists(lock_file_path):
-        os.unlink(lock_file_path)
+    """
+    Release the kernel lock held by this process for backups_dir, if any.
+    Only releases a lock this process actually acquired via
+    set_backups_lock() - verified by looking up our own held descriptor,
+    never by trusting the lock file's on-disk content.
+    """
+    backups_dir_abs = os.path.abspath(backups_dir)
+    fd = _held_locks.pop(backups_dir_abs, None)
+    if fd is None:
+        _lg.debug("No lock held by this process for %s, nothing to release",
+                  backups_dir)
+        return
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+    # Deliberately not unlinking the lock file: flock() locks an inode, not
+    # a path. Unlinking it here while another process is blocked opening
+    # the same path (force=True) would let that process (or a third one)
+    # create a fresh inode at the same path and acquire an independent
+    # lock, defeating mutual exclusion. The file is small and harmless to
+    # leave in place; only its content (diagnostics) gets overwritten by
+    # whoever next holds the lock.
 
 
 def set_backup_marker(backup_entry: Union[os.DirEntry, fs.PseudoDirEntry]):
