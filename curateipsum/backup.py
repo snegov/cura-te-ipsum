@@ -551,9 +551,19 @@ def cleanup_old_backups(backups_dir: str,
     keep = _compute_retention_plan(all_backups, thresholds)
     # Validate the plan before deleting anything: the most recent snapshot
     # must always survive, and the plan can never invent a backup that
-    # doesn't exist.
-    assert all_backups[0] in keep, "retention plan drops the latest snapshot"
-    assert keep <= set(all_backups), "retention plan keeps a phantom backup"
+    # doesn't exist. Plain `assert` would be stripped under `python -O`,
+    # silently disabling this check ahead of a destructive operation, so
+    # this is an explicit, always-on check instead.
+    if all_backups[0] not in keep:
+        raise BackupFailedError(
+            "Refusing to run retention: computed plan drops the latest "
+            "snapshot %s" % all_backups[0].name
+        )
+    if not keep <= set(all_backups):
+        raise BackupFailedError(
+            "Refusing to run retention: computed plan keeps a backup "
+            "that doesn't exist"
+        )
 
     backups_dir_abs = _canonical(backups_dir)
     repo_id = _ensure_repo_id(backups_dir)
@@ -643,7 +653,14 @@ def _quarantine_and_delete(entry: os.DirEntry, backups_dir_abs: str,
                   entry.path, err)
         return
     _lg.info("Removing old backup %s", entry.name)
-    shutil.rmtree(quarantine_path, ignore_errors=True)
+    try:
+        shutil.rmtree(quarantine_path)
+    except OSError as err:
+        _lg.error(
+            "Failed to remove quarantined backup %s: %s. It remains on "
+            "disk under %s and will be retried on the next cleanup or "
+            "backup startup.", entry.name, err, quarantine_path
+        )
 
 
 def process_backed_entry(backup_dir: str,
