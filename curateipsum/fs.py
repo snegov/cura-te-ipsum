@@ -8,6 +8,7 @@ import logging
 import os
 import subprocess
 import sys
+import uuid
 from typing import Iterable, Tuple, Union
 
 _lg = logging.getLogger(__name__)
@@ -251,12 +252,34 @@ def _break_shared_hardlink(path: str):
     into a staging directory via hardlink_dir() start out hardlinked to
     the previous snapshot; this is the copy-on-write step that keeps
     that previous, completed snapshot immutable.
+
+    The break itself must be metadata-neutral: copy_file() only carries
+    over the mode at file-creation time, not ownership or timestamps, so
+    the new private copy is explicitly restored to the original's full
+    stat before it replaces `path` - otherwise a caller that only meant
+    to update permissions would silently also reset ownership/mtime as a
+    side effect of this implementation detail.
     """
-    if os.lstat(path).st_nlink <= 1:
+    st = os.lstat(path)
+    if st.st_nlink <= 1:
         return
-    tmp_path = "%s.cow-%d" % (path, os.getpid())
-    copy_file(path, tmp_path)
-    os.replace(tmp_path, path)
+    tmp_path = "%s.cow-%d-%s" % (path, os.getpid(), uuid.uuid4().hex[:8])
+    try:
+        copy_file(path, tmp_path)
+        try:
+            os.chown(tmp_path, st.st_uid, st.st_gid)
+        except PermissionError:
+            _lg.debug("Cannot preserve ownership while breaking hardlink "
+                      "(not root): %s", path)
+        os.chmod(tmp_path, st.st_mode)
+        os.utime(tmp_path, (st.st_atime, st.st_mtime))
+        os.replace(tmp_path, path)
+    except OSError:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def copy_direntry(entry: Union[os.DirEntry, PseudoDirEntry], dst_path):

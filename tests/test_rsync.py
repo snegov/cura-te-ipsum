@@ -666,13 +666,16 @@ class TestRsyncHardlinkImmutability:
         dst_fpath = os.path.join(str(dst_dir),
                                  relpath(src_fpath, str(src_dir), str(dst_dir)))
         prior_snapshot_fpath = str(tmp_path / "prior_snapshot")
+        with open(src_fpath) as src_f:
+            src_content = src_f.read()
         with open(prior_snapshot_fpath, "w") as f:
-            f.write(open(src_fpath).read())
+            f.write(src_content)
         os.chmod(prior_snapshot_fpath, 0o644)
         src_stat = os.lstat(src_fpath)
         os.utime(prior_snapshot_fpath, (src_stat.st_atime, src_stat.st_mtime))
         os.link(prior_snapshot_fpath, dst_fpath)
         prior_mode_before = os.lstat(prior_snapshot_fpath).st_mode
+        dst_mtime_before = os.lstat(dst_fpath).st_mtime
         assert os.lstat(dst_fpath).st_ino == os.lstat(
             prior_snapshot_fpath).st_ino  # sanity: genuinely shared
 
@@ -683,6 +686,11 @@ class TestRsyncHardlinkImmutability:
         # dst must now have its own inode, no longer shared
         assert os.lstat(dst_fpath).st_ino != os.lstat(
             prior_snapshot_fpath).st_ino
+        # breaking the hardlink must not, as a side effect, reset mtime:
+        # rsync only intended to change permissions here (content/mtime
+        # already matched), and uid/gid are identical for this test user
+        # so the chown branch never fires to "accidentally" fix ownership
+        assert os.lstat(dst_fpath).st_mtime == dst_mtime_before
 
     def test_symlink_metadata_never_touches_external_target(
             self, common_fs_dirs, tmp_path
