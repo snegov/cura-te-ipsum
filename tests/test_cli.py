@@ -466,12 +466,44 @@ class TestLockHandling:
         assert result == 1
         m_release.assert_called_once_with(str(backups_dir))
 
+    def test_skips_cleanup_when_backup_fails(self, tmp_path):
+        """
+        A failed backup must prevent every retention deletion: if
+        initiate_backup raises, cleanup_old_backups must never run.
+        """
+        backups_dir = tmp_path / "backups"
+        backups_dir.mkdir()
+        source = tmp_path / "src"
+        source.mkdir()
+
+        from curateipsum import backup
+
+        with mock.patch('sys.argv', ['cura-te-ipsum', '-b',
+                                      str(backups_dir), str(source)]):
+            with mock.patch('curateipsum.backup.set_backups_lock',
+                            return_value=True):
+                with mock.patch(
+                        'curateipsum.backup.cleanup_old_backups') \
+                            as m_cleanup:
+                    with mock.patch(
+                            'curateipsum.backup.initiate_backup',
+                            side_effect=backup.BackupFailedError("boom")):
+                        with mock.patch(
+                                'curateipsum.backup.release_backups_lock'):
+                            cli.main()
+
+        m_cleanup.assert_not_called()
+
 
 class TestBackupExecution:
     """Test backup execution flow."""
 
-    def test_calls_cleanup_before_initiate(self, tmp_path):
-        """Should call cleanup_old_backups before initiate_backup."""
+    def test_calls_initiate_before_cleanup(self, tmp_path):
+        """
+        Should call initiate_backup before cleanup_old_backups: retention
+        deletes old snapshots, so it must only run once the new snapshot
+        is durable, never before it.
+        """
         backups_dir = tmp_path / "backups"
         backups_dir.mkdir()
         source = tmp_path / "src"
@@ -497,7 +529,7 @@ class TestBackupExecution:
                                 'curateipsum.backup.release_backups_lock'):
                             cli.main()
 
-        assert call_order == ['cleanup', 'initiate']
+        assert call_order == ['initiate', 'cleanup']
 
     def test_passes_correct_arguments_to_initiate_backup(self, tmp_path):
         """Should pass all required arguments to initiate_backup."""

@@ -89,13 +89,13 @@ Acceptance criteria:
 
 ### Correct retention before enabling automatic deletion
 
-- [ ] Compute retained snapshots independently for each policy tier and keep
+- [x] Compute retained snapshots independently for each policy tier and keep
   the union of those sets.
-- [ ] Compare ISO year and ISO week together.
-- [ ] Generate and validate a retention plan before deleting anything.
-- [ ] Run retention only after a new snapshot is durable and complete.
-- [ ] Quarantine deletion candidates before recursive removal.
-- [ ] Convert the existing retention `xfail` cases into passing tests.
+- [x] Compare ISO year and ISO week together.
+- [x] Generate and validate a retention plan before deleting anything.
+- [x] Run retention only after a new snapshot is durable and complete.
+- [x] Quarantine deletion candidates before recursive removal.
+- [x] Convert the existing retention `xfail` cases into passing tests.
 
 Acceptance criteria:
 
