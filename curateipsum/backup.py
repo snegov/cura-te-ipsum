@@ -1,12 +1,14 @@
 """
 Module with backup functions.
 """
+import json
 import logging
 import os
 import shutil
 import time
+import uuid
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Iterable, Union
+from typing import Dict, List, Optional, Iterable, Union
 
 try:
     import fcntl
@@ -24,6 +26,7 @@ LOCK_FILE = ".backups_lock"
 DELTA_DIR = ".backup_delta"
 BACKUP_MARKER = ".backup_finished"
 STAGING_PREFIX = ".incomplete-"
+REPO_ID_FILE = ".curateipsum_repo_id"
 _lg = logging.getLogger(__name__)
 
 
@@ -33,8 +36,207 @@ class BackupFailedError(Exception):
     Any failure while building a snapshot (copy error, parse error,
     unsupported entry, nonzero subprocess exit) is fatal: the partially
     built snapshot is discarded and this is the only way that failure is
-    reported to callers.
+    reported to callers. Topology validation and destructive-path
+    boundary failures also raise this, since both mean the run cannot
+    proceed safely.
     """
+
+
+def _canonical(path: str) -> str:
+    """Absolute, symlink-resolved path used for boundary comparisons."""
+    return os.path.realpath(os.path.abspath(path))
+
+
+def _is_same_or_within(inner: str, outer: str) -> bool:
+    """
+    True if canonical path `inner` equals or is nested under `outer`.
+    commonpath() compares path components, not raw string prefixes, so
+    this is correct even when `outer` is the filesystem root - unlike a
+    startswith(outer + sep) check, which mishandles root.
+    """
+    return os.path.commonpath([inner, outer]) == outer
+
+
+def validate_topology(sources: List[str], backups_dir_abs: str) -> None:
+    """
+    Reject a source/backups_dir layout that could lead to a source being
+    backed up into itself, a backup silently overwriting another source,
+    or two sources colliding at the same destination path.
+
+    :raises BackupFailedError: if any boundary or collision check fails.
+    """
+    backups_canon = _canonical(backups_dir_abs)
+
+    seen_canon: Dict[str, str] = {}
+    seen_basename: Dict[str, str] = {}
+    for src in sources:
+        src_canon = _canonical(src)
+
+        if _is_same_or_within(src_canon, backups_canon):
+            raise BackupFailedError(
+                "Source %s is inside the backups directory %s"
+                % (src, backups_dir_abs)
+            )
+        if _is_same_or_within(backups_canon, src_canon):
+            raise BackupFailedError(
+                "Backups directory %s is inside source %s"
+                % (backups_dir_abs, src)
+            )
+
+        if src_canon in seen_canon:
+            raise BackupFailedError(
+                "Duplicate source: %s and %s both resolve to %s"
+                % (seen_canon[src_canon], src, src_canon)
+            )
+        seen_canon[src_canon] = src
+
+        basename = os.path.basename(src_canon)
+        if basename in seen_basename:
+            raise BackupFailedError(
+                "Sources %s and %s both back up to the same destination "
+                "name %r; use distinct directory names"
+                % (seen_basename[basename], src, basename)
+            )
+        seen_basename[basename] = src
+
+
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def _read_small_file_no_follow(path: str, max_bytes: int = 4096
+                               ) -> Optional[str]:
+    """
+    Read a small file, refusing to follow a symlink at `path`. Returns
+    None if the path doesn't exist, isn't a regular file, or is a
+    symlink.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | _O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        return os.read(fd, max_bytes).decode()
+    finally:
+        os.close(fd)
+
+
+def _write_small_file_no_follow(path: str, content: str):
+    """
+    Atomically (create-or-replace) write a small file at `path`. Writes
+    to a sibling temp file and renames it into place: rename() replaces
+    whatever directory entry currently sits at `path` - including a
+    symlink itself, never the symlink's target - so this can never write
+    through a pre-existing symlink. It also means a concurrent reader
+    never observes a partially-written or stale-plus-new-content file.
+    """
+    tmp_path = "%s.tmp-%d" % (path, os.getpid())
+    fd = os.open(tmp_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY | _O_NOFOLLOW, 0o644)
+    try:
+        os.write(fd, content.encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp_path, path)
+
+
+def _ensure_repo_id(backups_dir: str) -> str:
+    """
+    Return this backups directory's identity, generating and persisting
+    one on first use. Recorded in every snapshot's manifest so a deletion
+    can later verify a directory genuinely belongs to this repository
+    before it is recursively removed.
+    """
+    id_path = os.path.join(backups_dir, REPO_ID_FILE)
+    repo_id = _read_small_file_no_follow(id_path)
+    if repo_id:
+        return repo_id.strip()
+
+    repo_id = uuid.uuid4().hex
+    _write_small_file_no_follow(id_path, repo_id)
+    return repo_id
+
+
+def _write_manifest(marker_path: str, backups_dir: str, snapshot_name: str):
+    """Write and fsync the completion manifest for a finished snapshot."""
+    manifest = json.dumps({
+        "repo_id": _ensure_repo_id(backups_dir),
+        "snapshot": snapshot_name,
+    })
+    _write_small_file_no_follow(marker_path, manifest)
+
+
+# Sentinel for a marker that exists but predates the JSON manifest
+# format (an empty touch file, as set_backup_marker() used to write).
+# Distinguished from corrupt/forged content: an empty marker can only
+# be a pre-migration artifact, never a deliberately altered one.
+_LEGACY_MANIFEST = object()
+
+
+def _read_manifest(marker_path: str) -> Union[dict, object, None]:
+    """
+    Read a snapshot manifest. Returns _LEGACY_MANIFEST for a pre-migration
+    empty marker, or None if the marker is missing, unreadable, or holds
+    content that fails to parse as JSON (corrupt or forged).
+    """
+    try:
+        with open(marker_path, "r") as f:
+            content = f.read()
+    except OSError:
+        return None
+    if not content:
+        return _LEGACY_MANIFEST
+    try:
+        return json.loads(content)
+    except ValueError:
+        return None
+
+
+def _verify_safe_to_delete(entry: os.DirEntry, backups_dir_abs: str,
+                           repo_id: str) -> bool:
+    """
+    Verify a snapshot directory entry may be recursively deleted: it must
+    be a real, non-symlinked directory living directly inside
+    backups_dir_abs, on the same filesystem (never crossing a mount
+    point), and carrying a manifest whose repo_id matches this
+    repository's identity.
+    """
+    if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+        _lg.error("Refusing to delete %s: not a real directory", entry.path)
+        return False
+
+    entry_canon = _canonical(entry.path)
+    if os.path.dirname(entry_canon) != backups_dir_abs:
+        _lg.error("Refusing to delete %s: escapes backups directory %s",
+                  entry.path, backups_dir_abs)
+        return False
+
+    try:
+        entry_dev = os.stat(entry.path).st_dev
+        backups_dev = os.stat(backups_dir_abs).st_dev
+    except OSError as err:
+        _lg.error("Refusing to delete %s: stat failed: %s", entry.path, err)
+        return False
+    if entry_dev != backups_dev:
+        _lg.error("Refusing to delete %s: crosses a mount point",
+                  entry.path)
+        return False
+
+    manifest = _read_manifest(_get_backup_marker(entry).path)
+    if manifest is _LEGACY_MANIFEST:
+        _lg.warning(
+            "%s has a pre-migration marker with no repository identity; "
+            "adopting it into repository %s", entry.path, repo_id
+        )
+        return True
+    if manifest is None or manifest.get("repo_id") != repo_id:
+        _lg.error(
+            "Refusing to delete %s: missing, corrupt, or mismatched "
+            "repository identity in manifest", entry.path
+        )
+        return False
+
+    return True
 
 
 def _get_backup_marker(
@@ -203,7 +405,8 @@ def set_backup_marker(backup_entry: Union[os.DirEntry, fs.PseudoDirEntry]):
     """Create finished backup marker file in backup's directory."""
     backup_marker = _get_backup_marker(backup_entry)
     if not os.path.exists(backup_marker.path):
-        open(backup_marker.path, "a").close()
+        backups_dir = os.path.dirname(os.path.normpath(backup_entry.path))
+        _write_manifest(backup_marker.path, backups_dir, backup_entry.name)
 
 
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
@@ -242,13 +445,37 @@ def cleanup_stale_staging_dirs(backups_dir: str):
     backup run. Must be called before a new backup starts so a stale
     staging directory can never be mistaken for a real snapshot.
     """
+    backups_dir_abs = _canonical(backups_dir)
+    try:
+        backups_dev = os.stat(backups_dir_abs).st_dev
+    except OSError as err:
+        _lg.error("Cannot stat backups directory %s: %s", backups_dir, err)
+        return
+
     with os.scandir(backups_dir) as it:
         entry: os.DirEntry
         for entry in it:
-            if entry.name.startswith(STAGING_PREFIX) and entry.is_dir():
-                _lg.warning("Removing abandoned staging directory: %s",
-                           entry.name)
-                shutil.rmtree(entry.path, ignore_errors=True)
+            if not entry.name.startswith(STAGING_PREFIX):
+                continue
+            if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                _lg.error("Refusing to remove %s: not a real directory",
+                          entry.path)
+                continue
+            if os.path.dirname(_canonical(entry.path)) != backups_dir_abs:
+                _lg.error("Refusing to remove %s: escapes backups directory",
+                          entry.path)
+                continue
+            try:
+                if os.stat(entry.path).st_dev != backups_dev:
+                    _lg.error("Refusing to remove %s: crosses a mount point",
+                              entry.path)
+                    continue
+            except OSError as err:
+                _lg.error("Cannot stat %s: %s", entry.path, err)
+                continue
+            _lg.warning("Removing abandoned staging directory: %s",
+                       entry.name)
+            shutil.rmtree(entry.path, ignore_errors=True)
 
 
 def cleanup_old_backups(backups_dir: str,
@@ -321,6 +548,9 @@ def cleanup_old_backups(backups_dir: str,
             .strftime(BACKUP_ENT_FMT)
         )
 
+    backups_dir_abs = _canonical(backups_dir)
+    repo_id = _ensure_repo_id(backups_dir)
+
     prev_backup = all_backups[0]
     to_remove = {b: False for b in all_backups}
 
@@ -365,12 +595,15 @@ def cleanup_old_backups(backups_dir: str,
         to_remove[backup] = True
 
     for backup, do_delete in to_remove.items():
-        if do_delete:
-            if dry_run:
-                _lg.info("Would remove old backup %s", backup.name)
-            else:
-                _lg.info("Removing old backup %s", backup.name)
-                shutil.rmtree(backup.path)
+        if not do_delete:
+            continue
+        if dry_run:
+            _lg.info("Would remove old backup %s", backup.name)
+            continue
+        if not _verify_safe_to_delete(backup, backups_dir_abs, repo_id):
+            continue
+        _lg.info("Removing old backup %s", backup.name)
+        shutil.rmtree(backup.path)
 
 
 def process_backed_entry(backup_dir: str,
@@ -510,15 +743,11 @@ def initiate_backup(sources,
         shutil.rmtree(staging.path, ignore_errors=True)
         return None
 
-    # write and fsync completion marker only after every source succeeded,
+    # write and fsync completion manifest only after every source succeeded,
     # then atomically rename the staging dir into its final snapshot name
     marker_name = "%s_%s" % (BACKUP_MARKER, snapshot_name)
-    marker_fd = os.open(os.path.join(staging.path, marker_name),
-                        os.O_CREAT | os.O_WRONLY, 0o644)
-    try:
-        os.fsync(marker_fd)
-    finally:
-        os.close(marker_fd)
+    _write_manifest(os.path.join(staging.path, marker_name),
+                    backups_dir, snapshot_name)
     _fsync_dir(staging.path)
 
     final_path = os.path.join(backups_dir, snapshot_name)
