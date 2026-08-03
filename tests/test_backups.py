@@ -916,3 +916,18 @@ class TestDeletionBoundarySafety:
 
         assert os.path.lexists(os.path.join(str(backup_dir), staging_name))
         assert (real_target / "canary").exists()
+
+    def test_deletes_legacy_backup_with_empty_marker(
+            self, backup_dir, add_backup, run_cleanup
+    ):
+        """A pre-migration empty marker (no manifest) is adopted, not
+        permanently protected, since it can't be a forged one."""
+        add_backup("20220101_0000")
+        old = add_backup("20200101_0000")
+
+        marker_path = bk._get_backup_marker(old).path
+        open(marker_path, "w").close()  # simulate pre-migration marker
+
+        run_cleanup(keep_all=0)
+
+        assert not os.path.exists(old.path)

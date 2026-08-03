@@ -48,11 +48,13 @@ def _canonical(path: str) -> str:
 
 
 def _is_same_or_within(inner: str, outer: str) -> bool:
-    """True if canonical path `inner` equals or is nested under `outer`."""
-    if inner == outer:
-        return True
-    common = os.path.commonpath([inner, outer])
-    return common == outer and inner.startswith(outer + os.path.sep)
+    """
+    True if canonical path `inner` equals or is nested under `outer`.
+    commonpath() compares path components, not raw string prefixes, so
+    this is correct even when `outer` is the filesystem root - unlike a
+    startswith(outer + sep) check, which mishandles root.
+    """
+    return os.path.commonpath([inner, outer]) == outer
 
 
 def validate_topology(sources: List[str], backups_dir_abs: str) -> None:
@@ -98,6 +100,46 @@ def validate_topology(sources: List[str], backups_dir_abs: str) -> None:
         seen_basename[basename] = src
 
 
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+
+
+def _read_small_file_no_follow(path: str, max_bytes: int = 4096
+                               ) -> Optional[str]:
+    """
+    Read a small file, refusing to follow a symlink at `path`. Returns
+    None if the path doesn't exist, isn't a regular file, or is a
+    symlink.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | _O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        return os.read(fd, max_bytes).decode()
+    finally:
+        os.close(fd)
+
+
+def _write_small_file_no_follow(path: str, content: str):
+    """
+    Atomically (create-or-replace) write a small file at `path`. Writes
+    to a sibling temp file and renames it into place: rename() replaces
+    whatever directory entry currently sits at `path` - including a
+    symlink itself, never the symlink's target - so this can never write
+    through a pre-existing symlink. It also means a concurrent reader
+    never observes a partially-written or stale-plus-new-content file.
+    """
+    tmp_path = "%s.tmp-%d" % (path, os.getpid())
+    fd = os.open(tmp_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY | _O_NOFOLLOW, 0o644)
+    try:
+        os.write(fd, content.encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(tmp_path, path)
+
+
 def _ensure_repo_id(backups_dir: str) -> str:
     """
     Return this backups directory's identity, generating and persisting
@@ -106,21 +148,12 @@ def _ensure_repo_id(backups_dir: str) -> str:
     before it is recursively removed.
     """
     id_path = os.path.join(backups_dir, REPO_ID_FILE)
-    try:
-        with open(id_path, "r") as f:
-            repo_id = f.read().strip()
-        if repo_id:
-            return repo_id
-    except OSError:
-        pass
+    repo_id = _read_small_file_no_follow(id_path)
+    if repo_id:
+        return repo_id.strip()
 
     repo_id = uuid.uuid4().hex
-    fd = os.open(id_path, os.O_CREAT | os.O_WRONLY, 0o644)
-    try:
-        os.write(fd, repo_id.encode())
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    _write_small_file_no_follow(id_path, repo_id)
     return repo_id
 
 
@@ -130,23 +163,29 @@ def _write_manifest(marker_path: str, backups_dir: str, snapshot_name: str):
         "repo_id": _ensure_repo_id(backups_dir),
         "snapshot": snapshot_name,
     })
-    fd = os.open(marker_path, os.O_CREAT | os.O_WRONLY, 0o644)
-    try:
-        os.write(fd, manifest.encode())
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    _write_small_file_no_follow(marker_path, manifest)
 
 
-def _read_manifest(marker_path: str) -> Optional[dict]:
-    """Read a snapshot manifest, or None if missing/unreadable/legacy."""
+# Sentinel for a marker that exists but predates the JSON manifest
+# format (an empty touch file, as set_backup_marker() used to write).
+# Distinguished from corrupt/forged content: an empty marker can only
+# be a pre-migration artifact, never a deliberately altered one.
+_LEGACY_MANIFEST = object()
+
+
+def _read_manifest(marker_path: str) -> Union[dict, object, None]:
+    """
+    Read a snapshot manifest. Returns _LEGACY_MANIFEST for a pre-migration
+    empty marker, or None if the marker is missing, unreadable, or holds
+    content that fails to parse as JSON (corrupt or forged).
+    """
     try:
         with open(marker_path, "r") as f:
             content = f.read()
     except OSError:
         return None
     if not content:
-        return None
+        return _LEGACY_MANIFEST
     try:
         return json.loads(content)
     except ValueError:
@@ -184,10 +223,16 @@ def _verify_safe_to_delete(entry: os.DirEntry, backups_dir_abs: str,
         return False
 
     manifest = _read_manifest(_get_backup_marker(entry).path)
+    if manifest is _LEGACY_MANIFEST:
+        _lg.warning(
+            "%s has a pre-migration marker with no repository identity; "
+            "adopting it into repository %s", entry.path, repo_id
+        )
+        return True
     if manifest is None or manifest.get("repo_id") != repo_id:
         _lg.error(
-            "Refusing to delete %s: missing or mismatched repository "
-            "identity in manifest", entry.path
+            "Refusing to delete %s: missing, corrupt, or mismatched "
+            "repository identity in manifest", entry.path
         )
         return False
 
