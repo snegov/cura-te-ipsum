@@ -384,10 +384,9 @@ class TestDirectoryValidation:
         source = tmp_path / "src"
         source.mkdir()
 
-        with mock.patch('sys.argv', ['cura-te-ipsum', '-b', 'backups',
-                                      str(source)]):
-            with mock.patch('os.path.abspath',
-                            return_value=str(backups_dir)) as m_abspath:
+        with mock.patch('os.getcwd', return_value=str(tmp_path)):
+            with mock.patch('sys.argv', ['cura-te-ipsum', '-b', 'backups',
+                                          str(source)]):
                 with mock.patch('os.path.isdir', return_value=True):
                     with mock.patch('curateipsum.backup.set_backups_lock',
                                     return_value=True) as m_lock:
@@ -399,7 +398,6 @@ class TestDirectoryValidation:
                                     'curateipsum.backup.release_backups_lock'):
                                     cli.main()
 
-        m_abspath.assert_called_with('backups')
         m_lock.assert_called_once_with(str(backups_dir), False)
 
 

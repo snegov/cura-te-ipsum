@@ -1,4 +1,5 @@
 import fcntl
+import json
 import os
 import subprocess
 import sys
@@ -741,6 +742,20 @@ class TestBackupIteration:
         marker_path = backup_path / marker_name
         assert marker_path.exists()
 
+    def test_set_backup_marker_records_repo_id(self, backup_dir):
+        """Test set_backup_marker records the repository identity."""
+        backup_dir.mkdir()
+        backup_path = backup_dir / "20210101_120000"
+        backup_path.mkdir()
+
+        backup_entry = bk.fs.PseudoDirEntry(str(backup_path))
+        bk.set_backup_marker(backup_entry)
+
+        marker_path = backup_path / f"{bk.BACKUP_MARKER}_20210101_120000"
+        manifest = bk._read_manifest(str(marker_path))
+        assert manifest["repo_id"] == bk._ensure_repo_id(str(backup_dir))
+        assert manifest["snapshot"] == "20210101_120000"
+
     def test_set_backup_marker_idempotent(self, backup_dir):
         """Test set_backup_marker is idempotent"""
         backup_dir.mkdir()
@@ -755,3 +770,149 @@ class TestBackupIteration:
         marker_name = f"{bk.BACKUP_MARKER}_20210101_120000"
         marker_path = backup_path / marker_name
         assert marker_path.exists()
+
+
+class TestValidateTopology:
+    """Tests for validate_topology source/backups_dir boundary checks."""
+
+    def test_disjoint_sources_ok(self, tmp_path):
+        src1 = tmp_path / "src1"
+        src2 = tmp_path / "src2"
+        backups = tmp_path / "backups"
+        src1.mkdir()
+        src2.mkdir()
+        backups.mkdir()
+
+        bk.validate_topology([str(src1), str(src2)], str(backups))
+
+    def test_source_inside_backups_dir_rejected(self, tmp_path):
+        backups = tmp_path / "backups"
+        src = backups / "src"
+        backups.mkdir()
+        src.mkdir()
+
+        with pytest.raises(bk.BackupFailedError):
+            bk.validate_topology([str(src)], str(backups))
+
+    def test_backups_dir_inside_source_rejected(self, tmp_path):
+        src = tmp_path / "src"
+        backups = src / "backups"
+        src.mkdir()
+        backups.mkdir()
+
+        with pytest.raises(bk.BackupFailedError):
+            bk.validate_topology([str(src)], str(backups))
+
+    def test_source_equals_backups_dir_rejected(self, tmp_path):
+        shared = tmp_path / "shared"
+        shared.mkdir()
+
+        with pytest.raises(bk.BackupFailedError):
+            bk.validate_topology([str(shared)], str(shared))
+
+    def test_duplicate_source_via_symlink_rejected(self, tmp_path):
+        src = tmp_path / "src"
+        backups = tmp_path / "backups"
+        alias = tmp_path / "alias"
+        src.mkdir()
+        backups.mkdir()
+        alias.symlink_to(src)
+
+        with pytest.raises(bk.BackupFailedError):
+            bk.validate_topology([str(src), str(alias)], str(backups))
+
+    def test_duplicate_basename_rejected(self, tmp_path):
+        parent_a = tmp_path / "a"
+        parent_b = tmp_path / "b"
+        backups = tmp_path / "backups"
+        (parent_a / "data").mkdir(parents=True)
+        (parent_b / "data").mkdir(parents=True)
+        backups.mkdir()
+
+        with pytest.raises(bk.BackupFailedError):
+            bk.validate_topology(
+                [str(parent_a / "data"), str(parent_b / "data")],
+                str(backups),
+            )
+
+    def test_parent_traversal_rejected(self, tmp_path):
+        backups = tmp_path / "backups"
+        outside = tmp_path / "outside"
+        backups.mkdir()
+        outside.mkdir()
+        traversal_src = str(backups / ".." / "outside")
+
+        bk.validate_topology([traversal_src], str(backups))
+        # sanity: same directory reached directly is rejected as an alias
+        with pytest.raises(bk.BackupFailedError):
+            bk.validate_topology([traversal_src, str(outside)], str(backups))
+
+
+class TestDeletionBoundarySafety:
+    """Tests that recursive deletion refuses unsafe targets."""
+
+    def test_refuses_to_delete_symlinked_snapshot_dir(
+            self, backup_dir, add_backup, run_cleanup, tmp_path
+    ):
+        """A symlink standing in for a snapshot dir must never be
+        recursively deleted, since shutil.rmtree would follow it."""
+        real_target = tmp_path / "outside_target"
+        real_target.mkdir()
+        (real_target / "canary").write_text("do-not-delete")
+
+        add_backup("20220101_0000")  # kept, forces the old one to be
+        # evaluated for removal
+        old_name = "20200101_0000"
+        old_marker = f"{bk.BACKUP_MARKER}_{old_name}"
+        os.symlink(str(real_target), os.path.join(str(backup_dir), old_name))
+        # marker must exist for _is_backup(), even though this is a symlink
+        os.makedirs(
+            os.path.join(str(real_target)), exist_ok=True
+        )
+        (real_target / old_marker).write_text("")
+
+        run_cleanup(keep_all=0)
+
+        assert os.path.lexists(os.path.join(str(backup_dir), old_name))
+        assert (real_target / "canary").exists()
+
+    def test_refuses_to_delete_snapshot_with_wrong_repo_id(
+            self, backup_dir, add_backup, run_cleanup
+    ):
+        add_backup("20220101_0000")
+        old = add_backup("20200101_0000")
+
+        marker_path = bk._get_backup_marker(old).path
+        with open(marker_path, "w") as f:
+            f.write(json.dumps({"repo_id": "forged", "snapshot": old.name}))
+
+        run_cleanup(keep_all=0)
+
+        assert os.path.isdir(old.path)
+
+    def test_deletes_legitimate_old_backup(
+            self, backup_dir, add_backup, run_cleanup
+    ):
+        add_backup("20220101_0000")
+        old = add_backup("20200101_0000")
+
+        run_cleanup(keep_all=0)
+
+        assert not os.path.exists(old.path)
+
+    def test_cleanup_stale_staging_ignores_symlinked_staging_dir(
+            self, backup_dir, tmp_path
+    ):
+        backup_dir.mkdir()
+        real_target = tmp_path / "outside_target"
+        real_target.mkdir()
+        (real_target / "canary").write_text("do-not-delete")
+
+        staging_name = f"{bk.STAGING_PREFIX}20220101_0000"
+        os.symlink(str(real_target),
+                  os.path.join(str(backup_dir), staging_name))
+
+        bk.cleanup_stale_staging_dirs(str(backup_dir))
+
+        assert os.path.lexists(os.path.join(str(backup_dir), staging_name))
+        assert (real_target / "canary").exists()

@@ -106,7 +106,10 @@ def check_backup_not_empty():
 def check_backups(backup_dir, check_backup_not_empty):
     """Helper to verify expected backups exist."""
     def _check(expected_backups):
-        backups_list = os.listdir(str(backup_dir))
+        backups_list = [
+            name for name in os.listdir(str(backup_dir))
+            if name != bk.REPO_ID_FILE
+        ]
         assert sorted(b.name for b in expected_backups) == sorted(backups_list)
         for b in expected_backups:
             assert check_backup_not_empty(b)

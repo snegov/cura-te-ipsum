@@ -92,6 +92,12 @@ def main():
             _lg.error("Source directory %s does not exist", src_dir)
             return 1
 
+    try:
+        backup.validate_topology(args.sources, backups_dir_abs)
+    except backup.BackupFailedError as err:
+        _lg.error("Unsafe source/backups layout: %s", err)
+        return 1
+
     start_time = time.time()
 
     if not backup.set_backups_lock(backups_dir_abs, args.force):

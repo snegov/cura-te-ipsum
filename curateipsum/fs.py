@@ -561,6 +561,11 @@ def nest_hardlink(src_dir: str, src_relpath: str, dst_dir: str):
     """
     _lg.debug("Nested hardlinking: %s%s%s -> %s",
               src_dir, os.path.sep, src_relpath, dst_dir)
+    if os.path.isabs(src_relpath) or os.path.pardir in src_relpath.split(
+            os.path.sep):
+        raise RuntimeError(
+            "Refusing non-normalized relative path: %s" % src_relpath)
+
     src_dir_abs = os.path.abspath(src_dir)
     src_full_path = os.path.join(src_dir_abs, src_relpath)
     dst_dir_abs = os.path.abspath(dst_dir)

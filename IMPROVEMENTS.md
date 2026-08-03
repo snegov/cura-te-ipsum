@@ -56,15 +56,15 @@ Acceptance criteria:
 
 ### Validate topology and destructive path boundaries
 
-- [ ] Canonicalize source and backup paths and reject every overlap.
-- [ ] Reject duplicate sources and destination basename collisions, or require
+- [x] Canonicalize source and backup paths and reject every overlap.
+- [x] Reject duplicate sources and destination basename collisions, or require
   explicit source labels.
-- [ ] Require normalized relative paths for nested operations.
-- [ ] Verify `commonpath` before every write, rename, or deletion.
-- [ ] Give each backup repository an identity recorded in its manifest.
-- [ ] Validate repository identity, snapshot type, marker, and device before
+- [x] Require normalized relative paths for nested operations.
+- [x] Verify `commonpath` before every write, rename, or deletion.
+- [x] Give each backup repository an identity recorded in its manifest.
+- [x] Validate repository identity, snapshot type, marker, and device before
   recursive deletion.
-- [ ] Refuse to cross mount points during deletion.
+- [x] Refuse to cross mount points during deletion.
 
 Acceptance criteria:
 
