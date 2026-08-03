@@ -852,8 +852,10 @@ class TestErrorRecovery:
             # Release lock
             bk.release_backups_lock(str(backups_dir))
 
-        # Lock should be removed
-        assert not os.path.exists(lock_path)
+        # Lock should be free again (re-acquirable), even though the lock
+        # file itself is intentionally left in place
+        assert bk.set_backups_lock(str(backups_dir))
+        bk.release_backups_lock(str(backups_dir))
 
         # Restore original function and verify backup can proceed
         monkeypatch.undo()
@@ -915,8 +917,10 @@ class TestErrorRecovery:
             assert os.path.exists(lock_path)
             bk.release_backups_lock(str(backups_dir))
 
-        # Lock should be removed
-        assert not os.path.exists(lock_path)
+        # Lock should be free again (re-acquirable), even though the lock
+        # file itself is intentionally left in place
+        assert bk.set_backups_lock(str(backups_dir))
+        bk.release_backups_lock(str(backups_dir))
 
     def test_permission_error_during_cleanup(
             self, integration_dirs, monkeypatch

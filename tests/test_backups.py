@@ -1,5 +1,9 @@
+import fcntl
 import os
-import signal
+import subprocess
+import sys
+import threading
+import time
 import pytest
 from unittest import mock
 from datetime import datetime
@@ -384,7 +388,12 @@ class TestBackupCleanup:
         check_backups(expected)
 
 class TestBackupLock:
-    """Test suite for backup lock file functionality."""
+    """Test suite for the fcntl.flock()-based backup lock."""
+
+    @staticmethod
+    def _read_lock_pid(lock_path: str) -> int:
+        with open(lock_path, "r") as f:
+            return int(f.readline().strip())
 
     def test_lock_creation(self, backup_dir):
         """Test that lock file is created with current PID"""
@@ -394,193 +403,189 @@ class TestBackupLock:
 
         lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
         assert os.path.exists(lock_path)
+        assert self._read_lock_pid(lock_path) == os.getpid()
 
-        with open(lock_path, "r") as f:
-            pid = int(f.read().strip())
-        assert pid == os.getpid()
+        bk.release_backups_lock(str(backup_dir))
 
-    def test_lock_prevents_concurrent_backup(self, backup_dir):
-        """Test that second lock acquisition is blocked"""
-        backup_dir.mkdir()
-        # First lock should succeed
-        result1 = bk.set_backups_lock(str(backup_dir))
-        assert result1
-
-        # The second lock should fail (same process trying to lock again)
-        # Write a different PID to simulate another process
-        lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
-        with open(lock_path, "w") as f:
-            f.write(str(os.getpid()))
-
-        result2 = bk.set_backups_lock(str(backup_dir), force=False)
-        assert not result2
-
-    def test_stale_lock_is_removed(self, backup_dir):
-        """Test that lock from non-existent process is cleaned up"""
-        backup_dir.mkdir()
-        lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
-
-        # Create lock with non-existent PID
-        with open(lock_path, "w") as f:
-            f.write("999999")
-
-        # Lock should succeed by removing stale lock
-        result = bk.set_backups_lock(str(backup_dir))
-        assert result
-
-        # Verify new lock has current PID
-        with open(lock_path, "r") as f:
-            pid = int(f.read().strip())
-        assert pid == os.getpid()
-
-    def test_corrupted_lock_is_handled(self, backup_dir):
-        """Test that corrupted lock file is handled gracefully"""
-        backup_dir.mkdir()
-        lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
-
-        # Create corrupted lock file (non-numeric content)
-        with open(lock_path, "w") as f:
-            f.write("not a number")
-
-        # Lock should succeed by removing corrupted lock
-        result = bk.set_backups_lock(str(backup_dir))
-        assert result
-
-        # Verify new lock has current PID
-        with open(lock_path, "r") as f:
-            pid = int(f.read().strip())
-        assert pid == os.getpid()
-
-    def test_empty_lock_is_handled(self, backup_dir):
-        """Test that empty lock file is handled gracefully"""
-        backup_dir.mkdir()
-        lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
-
-        # Create the empty lock file
-        open(lock_path, "w").close()
-
-        # Lock should succeed by removing empty lock
-        result = bk.set_backups_lock(str(backup_dir))
-        assert result
-
-        # Verify new lock has current PID
-        with open(lock_path, "r") as f:
-            pid = int(f.read().strip())
-        assert pid == os.getpid()
-
-    def test_lock_release(self, backup_dir):
-        """Test that lock file is properly released"""
+    def test_lock_metadata_includes_start_time(self, backup_dir):
+        """Test that lock file records a parseable start timestamp"""
         backup_dir.mkdir()
         bk.set_backups_lock(str(backup_dir))
+        lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
+
+        with open(lock_path, "r") as f:
+            lines = f.read().splitlines()
+        assert int(lines[0]) == os.getpid()
+        datetime.fromisoformat(lines[1])  # must not raise
+
+        bk.release_backups_lock(str(backup_dir))
+
+    def test_lock_prevents_concurrent_backup(self, backup_dir):
+        """
+        Test that a second holder of the kernel lock blocks a non-forced
+        acquisition attempt, using a real flock() held on a separate file
+        descriptor to stand in for another process.
+        """
+        backup_dir.mkdir()
+        lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
+
+        other_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(other_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.write(other_fd, b"12345\n2024-01-01T00:00:00\n")
+
+        try:
+            result = bk.set_backups_lock(str(backup_dir), force=False)
+            assert not result
+        finally:
+            fcntl.flock(other_fd, fcntl.LOCK_UN)
+            os.close(other_fd)
+
+    @pytest.mark.parametrize("garbage", ["999999", "not a number", ""])
+    def test_lock_acquired_despite_garbage_content(self, backup_dir, garbage):
+        """
+        A leftover lock file with stale/corrupted/empty content must not
+        block acquisition: the kernel lock, not the file content, is what
+        decides ownership. The old process's death already released it.
+        """
+        backup_dir.mkdir()
+        lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
+        with open(lock_path, "w") as f:
+            f.write(garbage)
+
+        result = bk.set_backups_lock(str(backup_dir))
+        assert result
+        assert self._read_lock_pid(lock_path) == os.getpid()
+
+        bk.release_backups_lock(str(backup_dir))
+
+    def test_lock_release(self, backup_dir):
+        """Test that a held lock can be released and re-acquired"""
+        backup_dir.mkdir()
+        assert bk.set_backups_lock(str(backup_dir))
         lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
         assert os.path.exists(lock_path)
 
         bk.release_backups_lock(str(backup_dir))
-        assert not os.path.exists(lock_path)
+
+        # lock file itself is intentionally left in place (see comment in
+        # release_backups_lock); the kernel lock must be free though
+        assert bk.set_backups_lock(str(backup_dir))
+        bk.release_backups_lock(str(backup_dir))
 
     def test_release_nonexistent_lock(self, backup_dir):
-        """Test that releasing non-existent lock doesn't raise error"""
+        """Releasing a lock never acquired by this process is a no-op"""
         backup_dir.mkdir()
         # Should not raise any exception
         bk.release_backups_lock(str(backup_dir))
 
-        lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
-        assert not os.path.exists(lock_path)
-
-    @mock.patch(f"{bk.__name__}.time.sleep")
-    @mock.patch(f"{bk.__name__}.os.kill")
-    @mock.patch(f"{bk.__name__}._pid_exists")
-    def test_force_lock_with_sigterm_success(self, mock_pid_exists, mock_kill,
-                                              mock_sleep, backup_dir):
-        """Test force flag sends SIGTERM and acquires lock when process stops"""
+    def test_release_only_releases_own_lock(self, backup_dir):
+        """
+        release_backups_lock() must only release a lock this process
+        acquired via set_backups_lock(), never one it merely knows about
+        through the lock file's on-disk content.
+        """
         backup_dir.mkdir()
         lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
 
-        # Create lock with PID 12345
-        with open(lock_path, "w") as f:
-            f.write("12345")
+        other_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(other_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
-        # Simulate process exists initially, then stops after SIGTERM
-        mock_pid_exists.side_effect = [True, False]
+        try:
+            # We never successfully acquired this lock ourselves.
+            bk.release_backups_lock(str(backup_dir))
 
-        result = bk.set_backups_lock(str(backup_dir), force=True)
+            # The other holder's lock must still be intact: a fresh
+            # non-blocking acquisition attempt must still fail.
+            assert not bk.set_backups_lock(str(backup_dir), force=False)
+        finally:
+            fcntl.flock(other_fd, fcntl.LOCK_UN)
+            os.close(other_fd)
+
+    def test_force_waits_for_lock_release_without_killing(self, backup_dir):
+        """
+        force=True must block until the current holder releases the lock
+        on its own, and must never send a signal to do it.
+        """
+        backup_dir.mkdir()
+        lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
+
+        other_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(other_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.write(other_fd, b"12345\n2024-01-01T00:00:00\n")
+
+        def _release_other_after_delay():
+            time.sleep(0.5)
+            fcntl.flock(other_fd, fcntl.LOCK_UN)
+            os.close(other_fd)
+
+        releaser = threading.Thread(target=_release_other_after_delay)
+
+        with mock.patch("os.kill") as mock_kill:
+            releaser.start()
+            start = time.monotonic()
+            result = bk.set_backups_lock(str(backup_dir), force=True)
+            elapsed = time.monotonic() - start
+            releaser.join()
+
         assert result
+        # Must have actually waited for the release, not raced past it.
+        assert elapsed >= 0.4
+        mock_kill.assert_not_called()
 
-        # Verify SIGTERM was sent
-        mock_kill.assert_called_once_with(12345, signal.SIGTERM)
+        assert self._read_lock_pid(lock_path) == os.getpid()
+        bk.release_backups_lock(str(backup_dir))
 
-        # Verify we waited after SIGTERM
-        assert mock_sleep.call_count == 1
-        mock_sleep.assert_any_call(5)
-
-        # Verify new lock has current PID
-        with open(lock_path, "r") as f:
-            pid = int(f.read().strip())
-        assert pid == os.getpid()
-
-    @mock.patch(f"{bk.__name__}.time.sleep")
-    @mock.patch(f"{bk.__name__}.os.kill")
-    @mock.patch(f"{bk.__name__}._pid_exists")
-    def test_force_lock_requires_sigkill(self, mock_pid_exists, mock_kill,
-                                         mock_sleep, backup_dir):
-        """Test force flag escalates to SIGKILL when SIGTERM fails"""
+    def test_multiprocess_only_one_holder_and_crash_releases_lock(
+            self, backup_dir
+    ):
+        """
+        End-to-end proof with a real second process (not a mock):
+        - only one process can hold the lock at a time.
+        - killing the holder with SIGKILL (simulating a crash) releases
+          the kernel lock automatically, with no PID/metadata inspection
+          needed on our side, and no other process is ever signaled.
+        """
         backup_dir.mkdir()
         lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
 
-        # Create lock with PID 12345
-        with open(lock_path, "w") as f:
-            f.write("12345")
+        holder_script = (
+            "import fcntl, os, sys, time;"
+            "fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o644);"
+            "fcntl.flock(fd, fcntl.LOCK_EX);"
+            "print('locked', flush=True);"
+            "time.sleep(30)"
+        )
+        holder = subprocess.Popen(
+            [sys.executable, "-c", holder_script, lock_path],
+            stdout=subprocess.PIPE, text=True,
+        )
+        try:
+            # Wait for the holder to actually acquire the lock.
+            line = holder.stdout.readline()
+            assert line.strip() == "locked"
 
-        # Simulate process survives SIGTERM, dies after SIGKILL
-        mock_pid_exists.side_effect = [True, True, False]
+            # A second, non-forced acquisition attempt must fail while the
+            # holder is alive.
+            assert not bk.set_backups_lock(str(backup_dir), force=False)
 
-        result = bk.set_backups_lock(str(backup_dir), force=True)
-        assert result
+            # Simulate the holder crashing. Do this outside the os.kill
+            # patch below: Popen.kill() itself calls os.kill() and we only
+            # want to observe *our* code's behavior, not intercept the
+            # test's own process teardown.
+            holder.kill()
+            holder.wait(timeout=5)
 
-        # Verify both SIGTERM and SIGKILL were sent
-        assert mock_kill.call_count == 2
-        mock_kill.assert_any_call(12345, signal.SIGTERM)
-        mock_kill.assert_any_call(12345, signal.SIGKILL)
-
-        # Verify sleep was called twice (5s after SIGTERM, 1s after SIGKILL)
-        assert mock_sleep.call_count == 2
-        mock_sleep.assert_any_call(5)
-        mock_sleep.assert_any_call(1)
-
-        # Verify new lock has current PID
-        with open(lock_path, "r") as f:
-            pid = int(f.read().strip())
-        assert pid == os.getpid()
-
-    @mock.patch(f"{bk.__name__}.time.sleep")
-    @mock.patch(f"{bk.__name__}.os.kill")
-    @mock.patch(f"{bk.__name__}._pid_exists")
-    def test_force_lock_handles_kill_failure(self, mock_pid_exists, mock_kill,
-                                              mock_sleep, backup_dir):
-        """Test force flag handles os.kill() failures gracefully"""
-        backup_dir.mkdir()
-        lock_path = os.path.join(str(backup_dir), bk.LOCK_FILE)
-
-        # Create lock with PID 12345
-        with open(lock_path, "w") as f:
-            f.write("12345")
-
-        # Simulate process exists
-        mock_pid_exists.return_value = True
-
-        # Simulate permission error when trying to kill
-        mock_kill.side_effect = OSError("Permission denied")
-
-        result = bk.set_backups_lock(str(backup_dir), force=True)
-        assert not result  # Should fail
-
-        # Verify SIGTERM was attempted
-        mock_kill.assert_called_once_with(12345, signal.SIGTERM)
-
-        # Lock should still exist with old PID
-        with open(lock_path, "r") as f:
-            pid = int(f.read().strip())
-        assert pid == 12345
+            with mock.patch("os.kill") as mock_kill:
+                # The kernel released the lock on process exit; we should
+                # be able to acquire it now without having sent any signal
+                # to the (now-dead) holder PID ourselves.
+                assert bk.set_backups_lock(str(backup_dir), force=False)
+                mock_kill.assert_not_called()
+        finally:
+            bk.release_backups_lock(str(backup_dir))
+            if holder.poll() is None:
+                holder.kill()
+                holder.wait(timeout=5)
 
 
 class TestBackupIteration:

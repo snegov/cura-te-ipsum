@@ -30,10 +30,10 @@ Acceptance criteria:
 
 ### Replace PID-file process killing with a real lock
 
-- [ ] Use `fcntl.flock()` and hold the descriptor for the full operation.
-- [ ] Keep PID and process-start metadata for diagnostics only.
-- [ ] Remove process killing from `--force` behavior.
-- [ ] Verify lock ownership before releasing or replacing metadata.
+- [x] Use `fcntl.flock()` and hold the descriptor for the full operation.
+- [x] Keep PID and process-start metadata for diagnostics only.
+- [x] Remove process killing from `--force` behavior.
+- [x] Verify lock ownership before releasing or replacing metadata.
 
 Acceptance criteria:
 
