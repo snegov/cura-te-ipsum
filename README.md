@@ -147,7 +147,9 @@ backups/
   excluded, not backed up** - but only with the default Python
   implementation, which records them in the snapshot manifest as
   exclusions rather than copying them. With `--external-rsync`,
-  `rsync`'s `--archive` flag copies/recreates these entries instead.
+  `rsync`'s `--archive` flag attempts to recreate these entries
+  instead, though device nodes typically require root privileges on
+  the destination and may be skipped or fail without them.
 - **Symlinks are preserved as symlinks**, including ones pointing
   outside the source tree - their targets are never followed or
   copied.
