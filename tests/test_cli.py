@@ -586,3 +586,108 @@ class TestBackupExecution:
         assert any("Finished" in record.message for record in caplog.records)
         assert any("time spent" in record.message
                    for record in caplog.records)
+
+
+class TestRestoreSubcommand:
+    """End-to-end tests for `cura-te-ipsum restore`, against a real
+    snapshot on disk - restore's file operations are cheap enough that
+    mocking them out would just be testing the mocks."""
+
+    def _make_backup(self, backups_dir, source):
+        from curateipsum import backup as bk
+        (source / "file1.txt").write_text("content1")
+        entry = bk.initiate_backup(sources=[str(source)],
+                                   backups_dir=str(backups_dir))
+        assert entry is not None
+        return entry
+
+    def test_restore_copies_snapshot_to_dest(self, tmp_path):
+        backups_dir = tmp_path / "backups"
+        backups_dir.mkdir()
+        source = tmp_path / "src"
+        source.mkdir()
+        self._make_backup(backups_dir, source)
+
+        dest = tmp_path / "dest"
+        with mock.patch('sys.argv', ['cura-te-ipsum', 'restore', '-b',
+                                      str(backups_dir), str(dest)]):
+            result = cli.main()
+
+        assert result == 0
+        restored = dest / "src" / "file1.txt"
+        assert restored.read_text() == "content1"
+
+    def test_restore_unknown_backups_dir_fails(self, tmp_path):
+        dest = tmp_path / "dest"
+        with mock.patch('sys.argv', ['cura-te-ipsum', 'restore', '-b',
+                                      str(tmp_path / "nope"), str(dest)]):
+            result = cli.main()
+
+        assert result == 1
+
+    def test_restore_unknown_snapshot_fails(self, tmp_path):
+        backups_dir = tmp_path / "backups"
+        backups_dir.mkdir()
+        source = tmp_path / "src"
+        source.mkdir()
+        self._make_backup(backups_dir, source)
+
+        dest = tmp_path / "dest"
+        with mock.patch('sys.argv', [
+                'cura-te-ipsum', 'restore', '-b', str(backups_dir),
+                '--snapshot', '20000101_000000', str(dest)]):
+            result = cli.main()
+
+        assert result == 1
+
+    def test_restore_dry_run_creates_nothing(self, tmp_path):
+        backups_dir = tmp_path / "backups"
+        backups_dir.mkdir()
+        source = tmp_path / "src"
+        source.mkdir()
+        self._make_backup(backups_dir, source)
+
+        dest = tmp_path / "dest"
+        with mock.patch('sys.argv', ['cura-te-ipsum', 'restore', '-b',
+                                      str(backups_dir), '-n', str(dest)]):
+            result = cli.main()
+
+        assert result == 0
+        assert not dest.exists()
+
+    def test_restore_verify_passes_after_clean_restore(self, tmp_path):
+        backups_dir = tmp_path / "backups"
+        backups_dir.mkdir()
+        source = tmp_path / "src"
+        source.mkdir()
+        self._make_backup(backups_dir, source)
+
+        dest = tmp_path / "dest"
+        with mock.patch('sys.argv', [
+                'cura-te-ipsum', 'restore', '-b', str(backups_dir),
+                '--verify', str(dest)]):
+            result = cli.main()
+
+        assert result == 0
+
+    def test_backup_subcommand_still_explicit(self, tmp_path):
+        """`cura-te-ipsum backup -b ... SRC` works the same as the
+        implicit form."""
+        backups_dir = tmp_path / "backups"
+        backups_dir.mkdir()
+        source = tmp_path / "src"
+        source.mkdir()
+
+        with mock.patch('sys.argv', ['cura-te-ipsum', 'backup', '-b',
+                                      str(backups_dir), str(source)]):
+            with mock.patch('curateipsum.backup.set_backups_lock',
+                            return_value=True):
+                with mock.patch('curateipsum.backup.cleanup_old_backups'):
+                    with mock.patch(
+                            'curateipsum.backup.initiate_backup') as m_init:
+                        with mock.patch(
+                                'curateipsum.backup.release_backups_lock'):
+                            result = cli.main()
+
+        assert result == 0
+        assert m_init.call_args.kwargs['sources'] == [str(source)]

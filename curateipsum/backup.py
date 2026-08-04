@@ -338,6 +338,29 @@ def _date_from_backup(backup_entry: os.DirEntry) -> datetime:
     return datetime.strptime(backup_entry.name, BACKUP_ENT_FMT)
 
 
+def find_backup(backups_dir: str,
+                snapshot_name: Optional[str] = None) -> os.DirEntry:
+    """
+    Return a specific snapshot by name, or the latest one if
+    snapshot_name is None.
+
+    :raises BackupFailedError: if snapshot_name doesn't match any backup
+        in backups_dir, or no backups exist at all.
+    """
+    if snapshot_name is None:
+        latest = _get_latest_backup(backups_dir)
+        if latest is None:
+            raise BackupFailedError("No backups found in %s" % backups_dir)
+        return latest
+
+    for entry in _iterate_backups(backups_dir):
+        if entry.name == snapshot_name:
+            return entry
+    raise BackupFailedError(
+        "No such backup %r in %s" % (snapshot_name, backups_dir)
+    )
+
+
 # Open lock file descriptors currently held by this process, keyed by the
 # absolute path of the backups directory they lock. The kernel associates
 # an flock() with this exact open file description, so the descriptor must
