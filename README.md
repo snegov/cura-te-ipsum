@@ -144,8 +144,10 @@ backups/
   workflow with dry-run, partial restore, or overwrite-policy support
   yet.
 - **Special filesystem entries (FIFOs, sockets, device nodes) are
-  excluded, not backed up.** They're recorded in the snapshot manifest
-  as exclusions rather than copied.
+  excluded, not backed up** - but only with the default Python
+  implementation, which records them in the snapshot manifest as
+  exclusions rather than copying them. With `--external-rsync`,
+  `rsync`'s `--archive` flag copies/recreates these entries instead.
 - **Symlinks are preserved as symlinks**, including ones pointing
   outside the source tree - their targets are never followed or
   copied.
