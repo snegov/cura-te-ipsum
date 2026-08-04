@@ -1,5 +1,10 @@
 # cura-te-ipsum
 
+> **⚠️ Experimental — not yet safe for production use.** This project is
+> still working through its data-safety checklist (see
+> [IMPROVEMENTS.md](IMPROVEMENTS.md)). Do not rely on it as your only
+> backup, and see [Limitations](#limitations) before using it.
+
 **cura-te-ipsum** is a space-efficient incremental backup utility for Linux and macOS that uses hardlinks to minimize storage usage while maintaining complete directory snapshots.
 
 Similar to Time Machine or rsnapshot, cura-te-ipsum creates backups that appear as complete directory trees but intelligently share unchanged files between snapshots, dramatically reducing storage requirements.
@@ -127,6 +132,24 @@ backups/
   .backups_lock                 # lock file (only during backup)
 ```
 
+## Limitations
+
+- **Never modify files inside a backup snapshot in place.** Unchanged
+  files are hardlinked between snapshots to save space, so editing or
+  truncating a file in one snapshot changes that same file's content
+  in every other snapshot sharing its inode. Treat every snapshot
+  directory as read-only; copy files out before editing them.
+- **No dedicated restore command.** Recovering data means manually
+  copying files out of a snapshot directory - there is no restore
+  workflow with dry-run, partial restore, or overwrite-policy support
+  yet.
+- **Special filesystem entries (FIFOs, sockets, device nodes) are
+  excluded, not backed up.** They're recorded in the snapshot manifest
+  as exclusions rather than copied.
+- **Symlinks are preserved as symlinks**, including ones pointing
+  outside the source tree - their targets are never followed or
+  copied.
+
 ## Development
 
 ### Running Tests
@@ -146,6 +169,8 @@ Maks Snegov (<snegov@spqr.link>)
 
 ## Project Status
 
-Development Status: Pre-Alpha
+Development Status: Pre-Alpha, experimental
 
-This project is actively maintained and used in production for personal backups, but the API and configuration options may change in future releases.
+This project is under active development and has not yet completed
+its data-safety checklist (see [IMPROVEMENTS.md](IMPROVEMENTS.md)).
+The API and configuration options may change in future releases.

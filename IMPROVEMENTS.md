@@ -120,10 +120,10 @@ Acceptance criteria:
 
 ### Add an immediate safety warning
 
-- [ ] Remove the current production-use claim from `README.md`.
-- [ ] State that the software is experimental until the P0 release gate passes.
-- [ ] Warn users not to modify hardlinked snapshots in place.
-- [ ] Document current recovery and metadata limitations honestly.
+- [x] Remove the current production-use claim from `README.md`.
+- [x] State that the software is experimental until the P0 release gate passes.
+- [x] Warn users not to modify hardlinked snapshots in place.
+- [x] Document current recovery and metadata limitations honestly.
 
 ## P1 - Recovery and release readiness
 
