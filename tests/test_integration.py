@@ -1045,3 +1045,39 @@ def test_source_changed_during_copy_fails_backup(integration_dirs,
     backups = [b for b in os.listdir(str(backups_dir))
               if not b.startswith(".")]
     assert backups == []
+
+
+@pytest.mark.skipif(not RSYNC_AVAILABLE, reason="rsync not available")
+def test_external_rsync_snapshot_still_gets_checksums(integration_dirs):
+    """
+    fs.rsync_ext() (external rsync) never yields a digest in msg, unlike
+    fs.rsync() - initiate_backup() must hash the copied files itself in
+    that case, or verify_snapshot() silently becomes a no-op whenever
+    --external-rsync is used.
+    """
+    backups_dir, source_dir = integration_dirs
+    (source_dir / "file1.txt").write_text("content1")
+
+    # Establish baseline with Python rsync first, same as
+    # test_external_rsync_creates_backup: a from-scratch external-rsync
+    # run emits a "created directory ..." header line this codebase's
+    # itemize-output parser doesn't handle, which is an unrelated,
+    # pre-existing limitation.
+    bk.initiate_backup(
+        sources=[str(source_dir)],
+        backups_dir=str(backups_dir),
+        dry_run=False,
+    )
+    time.sleep(1.1)
+    (source_dir / "file2.txt").write_text("content2")
+
+    snapshot = bk.initiate_backup(
+        sources=[str(source_dir)],
+        backups_dir=str(backups_dir),
+        dry_run=False,
+        external_rsync=True,
+    )
+
+    manifest = bk._read_manifest(bk._get_backup_marker(snapshot).path)
+    assert manifest["checksums"]
+    assert bk.verify_snapshot(snapshot) == []

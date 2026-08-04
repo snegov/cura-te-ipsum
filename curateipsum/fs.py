@@ -468,7 +468,7 @@ def rsync(src_dir,
 
         # rewrite dst if it is hard link to src (bad for backups)
         if src_entry.inode() == dst_entry.inode():
-            _lg.debug("Rsync, rewriting (different inodes): %s", rel_path)
+            _lg.debug("Rsync, rewriting (shared inode with src): %s", rel_path)
             try:
                 digest = update_direntry(src_entry, dst_entry)
                 yield rel_path, Actions.REWRITE, digest or ""

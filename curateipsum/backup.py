@@ -221,7 +221,7 @@ def verify_snapshot(backup_entry: Union[os.DirEntry, fs.PseudoDirEntry]
     manifest = _read_manifest(_get_backup_marker(backup_entry).path)
     if manifest is None or manifest is _LEGACY_MANIFEST:
         raise BackupFailedError(
-            "Cannot verify %s: missing or pre-migration manifest"
+            "Cannot verify %s: missing, corrupt, or pre-migration manifest"
             % backup_entry.name
         )
 
@@ -817,8 +817,20 @@ def initiate_backup(sources,
                         "Failed to copy %s: %s" % (entry_relpath, msg)
                     )
                 full_relpath = os.path.join(src_name, entry_relpath)
-                if action in (fs.Actions.CREATE, fs.Actions.REWRITE) and msg:
-                    checksums[full_relpath] = msg
+                if action in (fs.Actions.CREATE, fs.Actions.REWRITE):
+                    if msg:
+                        # fs.rsync() already hashed the file while
+                        # copying it.
+                        checksums[full_relpath] = msg
+                    else:
+                        # fs.rsync_ext() (external rsync) never returns a
+                        # digest - hash the copied file directly so
+                        # verify_snapshot() isn't silently a no-op when
+                        # external_rsync=True.
+                        full_path = os.path.join(staging.path, full_relpath)
+                        if (os.path.isfile(full_path)
+                                and not os.path.islink(full_path)):
+                            checksums[full_relpath] = _sha256_file(full_path)
                 # TODO maybe should be run if first backup too?
                 if latest_backup is not None:
                     process_backed_entry(
