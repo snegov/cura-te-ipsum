@@ -129,12 +129,12 @@ Acceptance criteria:
 
 ### Provide a safe restoration workflow
 
-- [ ] Implement a restore command or a complete tested restore procedure.
-- [ ] Support dry-run, partial restore, overwrite policy, and destination
+- [x] Implement a restore command or a complete tested restore procedure.
+- [x] Support dry-run, partial restore, overwrite policy, and destination
   boundary checks.
-- [ ] Preserve supported metadata and verify restored content against the
+- [x] Preserve supported metadata and verify restored content against the
   manifest.
-- [ ] Test restoration from current and older snapshots.
+- [x] Test restoration from current and older snapshots.
 
 ### Define filesystem compatibility
 

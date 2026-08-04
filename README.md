@@ -37,6 +37,11 @@ pip install .
 
 ## Usage
 
+cura-te-ipsum has two subcommands, `backup` and `restore`. For backwards
+compatibility, `backup` is implied when the first argument isn't a
+recognized subcommand - so `cura-te-ipsum -b DIR SOURCE` and
+`cura-te-ipsum backup -b DIR SOURCE` are equivalent.
+
 ### Basic Backup
 
 ```bash
@@ -84,6 +89,49 @@ cura-te-ipsum -b /backups /home/user/data --verbose
 ```bash
 cura-te-ipsum -b /backups /home/user/data --external-rsync
 ```
+
+### Restoring a Backup
+
+```
+cura-te-ipsum restore -b BACKUPS_DIR DEST [PATH ...]
+
+Required Arguments:
+  -b BACKUPS_DIR        Directory where backups are stored
+  DEST                  Directory to restore into (created if missing)
+
+Optional Arguments:
+  PATH                  Restore only these snapshot-relative paths
+                        (e.g. "documents/notes.txt"); default is everything
+  --snapshot NAME       Snapshot to restore, e.g. 20260101_120000
+                        (default: the latest snapshot)
+  --overwrite {never,always}
+                        What to do when a destination path already exists
+                        (default: never - existing paths are left alone
+                        and reported as skipped)
+  --verify              Verify restored content against the snapshot's
+                        manifest checksums afterwards
+  -n, --dry-run         Show what would be restored without copying
+                        anything or creating DEST
+  -f, --force           Wait for a running backup/restore instead of
+                        exiting immediately
+  -v, --verbose         Enable debug logging
+```
+
+Restoring the latest snapshot in full:
+```bash
+cura-te-ipsum restore -b /backups /tmp/recovered
+```
+
+Restoring one file from a specific snapshot, verifying it afterwards:
+```bash
+cura-te-ipsum restore -b /backups --snapshot 20260101_120000 --verify \
+  /tmp/recovered documents/notes.txt
+```
+
+A restore takes the same `.backups_lock` a backup does, so retention
+cleanup can never delete a snapshot out from under a restore in progress.
+Restored files keep the source's mode, ownership (when running as root),
+and timestamps; symlinks are recreated as symlinks, never followed.
 
 ## How It Works
 
@@ -139,10 +187,10 @@ backups/
   truncating a file in one snapshot changes that same file's content
   in every other snapshot sharing its inode. Treat every snapshot
   directory as read-only; copy files out before editing them.
-- **No dedicated restore command.** Recovering data means manually
-  copying files out of a snapshot directory - there is no restore
-  workflow with dry-run, partial restore, or overwrite-policy support
-  yet.
+- **Restore preserves data content and standard metadata only.** The
+  `restore` command copies file content, mode, ownership, timestamps,
+  and symlinks; it does not preserve ACLs, extended attributes, or
+  filesystem-specific flags.
 - **Special filesystem entries (FIFOs, sockets, device nodes) are
   excluded, not backed up** - but only with the default Python
   implementation, which records them in the snapshot manifest as
