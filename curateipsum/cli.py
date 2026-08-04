@@ -104,7 +104,10 @@ def _build_parser():
                                 nargs="*",
                                 metavar="PATH",
                                 help="restore only these snapshot-relative "
-                                     "paths, e.g. 'mydir/subdir/file.txt' "
+                                     "paths - each starts with the source "
+                                     "directory's basename, e.g. "
+                                     "'mydir/subdir/file.txt' for a source "
+                                     "backed up from /home/user/mydir "
                                      "(default: restore everything)")
 
     return parser

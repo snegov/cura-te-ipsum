@@ -100,8 +100,10 @@ Required Arguments:
   DEST                  Directory to restore into (created if missing)
 
 Optional Arguments:
-  PATH                  Restore only these snapshot-relative paths
-                        (e.g. "documents/notes.txt"); default is everything
+  PATH                  Restore only these snapshot-relative paths - each
+                        starts with the source directory's basename (e.g.
+                        "data/documents/notes.txt" for a source backed up
+                        from /home/user/data); default is everything
   --snapshot NAME       Snapshot to restore, e.g. 20260101_120000
                         (default: the latest snapshot)
   --overwrite {never,always}
@@ -122,10 +124,12 @@ Restoring the latest snapshot in full:
 cura-te-ipsum restore -b /backups /tmp/recovered
 ```
 
-Restoring one file from a specific snapshot, verifying it afterwards:
+Restoring one file from a specific snapshot, verifying it afterwards
+(here the source was backed up from `/home/user/data`, so the path
+starts with `data/`):
 ```bash
 cura-te-ipsum restore -b /backups --snapshot 20260101_120000 --verify \
-  /tmp/recovered documents/notes.txt
+  /tmp/recovered data/documents/notes.txt
 ```
 
 A restore takes the same `.backups_lock` a backup does, so retention
