@@ -1083,6 +1083,8 @@ def test_external_rsync_snapshot_still_gets_checksums(integration_dirs):
     assert bk.verify_snapshot(snapshot) == []
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"),
+                    reason="os.mkfifo not available on this platform")
 def test_fifo_excluded_and_recorded_without_blocking(integration_dirs):
     """
     A FIFO in the source must not block the backup (no writer is ever

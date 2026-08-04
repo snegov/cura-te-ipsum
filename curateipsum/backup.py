@@ -871,7 +871,18 @@ def initiate_backup(sources,
         _lg.info("Dry-run, removing staging directory: %s", snapshot_name)
         shutil.rmtree(staging.path, ignore_errors=True)
         return None
-    # do not create backup if no change from previous one
+    # do not create backup if no change from previous one - but a change
+    # in *which* entries are excluded is itself a change worth keeping,
+    # or the new exclusions would never make it into a written manifest.
+    if latest_backup is not None and not backup_changed:
+        prev_manifest = _read_manifest(_get_backup_marker(latest_backup).path)
+        prev_excluded = (
+            prev_manifest.get("excluded", {})
+            if isinstance(prev_manifest, dict) else {}
+        )
+        if excluded != prev_excluded:
+            backup_changed = True
+
     if latest_backup is not None and not backup_changed:
         _lg.info("Staged backup is the same as previous one %s, removing",
                  latest_backup.name)

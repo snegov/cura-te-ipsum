@@ -740,6 +740,8 @@ class TestEntryKind:
             entries = {e.name: e for e in it}
         assert fs.entry_kind(entries["link"]) == "symlink"
 
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"),
+                        reason="os.mkfifo not available on this platform")
     def test_fifo(self, tmp_path):
         path = os.path.join(str(tmp_path), "fifo")
         os.mkfifo(path)
@@ -753,24 +755,19 @@ class TestEntryKind:
         entry = fs.PseudoDirEntry("/dev/null")
         assert fs.entry_kind(entry) == "char_device"
 
+    @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"),
+                        reason="AF_UNIX not available on this platform")
     def test_socket(self):
         import tempfile
         # AF_UNIX paths are capped at ~104-108 bytes; pytest's tmp_path
         # nests too deep on macOS, so use a short-path tempdir directly.
-        d = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as d:
             sock_path = os.path.join(d, "s")
-            sock = socket.socket(socket.AF_UNIX)
-            try:
+            with socket.socket(socket.AF_UNIX) as sock:
                 sock.bind(sock_path)
                 with os.scandir(d) as it:
                     entry = next(iter(it))
                 assert fs.entry_kind(entry) == "socket"
-            finally:
-                sock.close()
-        finally:
-            os.unlink(sock_path)
-            os.rmdir(d)
 
 
 class TestRsyncExcludesUnsupportedEntries:
@@ -782,6 +779,8 @@ class TestRsyncExcludesUnsupportedEntries:
     whole backup.
     """
 
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"),
+                        reason="os.mkfifo not available on this platform")
     def test_fifo_without_writer_does_not_block(self, common_fs_dirs):
         src_dir, dst_dir = common_fs_dirs
         fifo_path = os.path.join(str(src_dir), "a_fifo")
@@ -794,25 +793,20 @@ class TestRsyncExcludesUnsupportedEntries:
         assert ("a_fifo", fs.Actions.EXCLUDE, "fifo") in results
         assert not os.path.lexists(os.path.join(str(dst_dir), "a_fifo"))
 
+    @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"),
+                        reason="AF_UNIX not available on this platform")
     def test_socket_is_excluded_not_fatal(self):
         import tempfile
-        d = tempfile.mkdtemp()
-        try:
+        with tempfile.TemporaryDirectory() as d:
             src_dir = os.path.join(d, "src")
             dst_dir = os.path.join(d, "dst")
             os.mkdir(src_dir)
             os.mkdir(dst_dir)
             sock_path = os.path.join(src_dir, "a_socket")
-            sock = socket.socket(socket.AF_UNIX)
-            try:
+            with socket.socket(socket.AF_UNIX) as sock:
                 sock.bind(sock_path)
                 results = list(fs.rsync(src_dir, dst_dir))
-            finally:
-                sock.close()
 
             assert ("a_socket", fs.Actions.EXCLUDE, "socket") in results
             assert fs.Actions.ERROR not in [r[1] for r in results]
             assert not os.path.lexists(os.path.join(dst_dir, "a_socket"))
-        finally:
-            os.unlink(sock_path)
-            shutil.rmtree(d, ignore_errors=True)

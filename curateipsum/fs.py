@@ -468,6 +468,14 @@ def rsync(src_dir,
         if src_kind not in _SUPPORTED_KINDS:
             _lg.warning("Rsync, excluding unsupported entry (%s): %s",
                        src_kind, rel_path)
+            # dst_entry may exist here (e.g. inherited via hardlink from
+            # the previous snapshot); an excluded entry must not linger.
+            if not dry_run:
+                try:
+                    rm_direntry(dst_entry)
+                except OSError as exc:
+                    yield rel_path, Actions.ERROR, str(exc)
+                    continue
             yield rel_path, Actions.EXCLUDE, src_kind
             continue
 
