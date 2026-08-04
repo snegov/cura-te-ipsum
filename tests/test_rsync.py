@@ -1,6 +1,5 @@
 import os
 import os.path
-import shutil
 import socket
 import string
 from unittest.mock import Mock, patch
