@@ -72,13 +72,14 @@ def restore_snapshot(
     :param rel_paths: restrict the restore to these snapshot-relative
         paths (and anything nested under them); default restores
         everything in the snapshot.
-    :return: relative paths skipped because they already existed at
-        dest_dir under overwrite="never". Always empty on dry_run, since
-        nothing is written to check against.
+    :return: relative paths that already existed at dest_dir under
+        overwrite="never" - skipped for real, or (on dry_run) reported as
+        what would be skipped.
     :raises RestoreError: if the snapshot has no manifest, dest_dir is
-        inside the snapshot being restored, or a copy fails partway
-        through (the destination is left as-is; already-restored paths
-        are not rolled back).
+        inside the snapshot being restored, a destination path would
+        resolve outside dest_dir (e.g. via a symlinked parent directory),
+        or a copy fails partway through (the destination is left as-is;
+        already-restored paths are not rolled back).
     """
     if overwrite not in OVERWRITE_POLICIES:
         raise ValueError("Unknown overwrite policy: %r" % overwrite)
@@ -105,6 +106,17 @@ def restore_snapshot(
     skipped = []
     for entry, relpath in plan_restore(snapshot_entry, rel_paths):
         dst_path = os.path.join(dest_dir, relpath)
+        # A symlink planted under dest_dir (by another process, or left
+        # over from a previous run) could otherwise redirect lexists(),
+        # rm_direntry(), or copy_direntry() below to write, delete, or
+        # read through it, outside dest_dir entirely.
+        dst_canon = backup._canonical(dst_path)
+        if not backup._is_same_or_within(dst_canon, dest_canon):
+            raise RestoreError(
+                "Refusing to restore %s: resolves outside destination "
+                "%s (a parent path component may be a symlink)"
+                % (relpath, dest_dir)
+            )
         exists = os.path.lexists(dst_path)
         if exists and overwrite == OVERWRITE_NEVER:
             _lg.info("Skipping existing %s (overwrite=%s)",
@@ -152,11 +164,20 @@ def verify_restored(
             % snapshot_entry.name
         )
 
+    dest_canon = backup._canonical(dest_dir)
     mismatches = []
     for relpath, expected_digest in manifest.get("checksums", {}).items():
         if rel_paths is not None and not _under_any(relpath, rel_paths):
             continue
         full_path = os.path.join(dest_dir, relpath)
+        # Same symlink-escape concern as restore_snapshot(): don't let a
+        # planted symlink under dest_dir make this hash a file outside it.
+        full_canon = backup._canonical(full_path)
+        if not backup._is_same_or_within(full_canon, dest_canon):
+            _lg.error("Refusing to verify %s: resolves outside "
+                     "destination %s", relpath, dest_dir)
+            mismatches.append(relpath)
+            continue
         try:
             actual_digest = backup._sha256_file(full_path)
         except OSError:

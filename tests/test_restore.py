@@ -133,6 +133,24 @@ class TestRestoreSnapshot:
         with pytest.raises(restore.RestoreError):
             restore.restore_snapshot(snapshot, snapshot.path)
 
+    def test_refuses_symlinked_dest_subdir_escape(self, restore_dirs):
+        backups_dir, source_dir, dest_dir = restore_dirs
+        (source_dir / "subdir").mkdir()
+        (source_dir / "subdir" / "file.txt").write_text("content")
+
+        snapshot = _make_snapshot(backups_dir, source_dir)
+        src_name = os.path.basename(str(source_dir))
+
+        outside = restore_dirs[2].parent / "outside"
+        outside.mkdir()
+        dest_dir.mkdir()
+        (dest_dir / src_name).symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(restore.RestoreError):
+            restore.restore_snapshot(snapshot, str(dest_dir))
+
+        assert os.listdir(str(outside)) == []
+
     def test_unknown_overwrite_policy_rejected(self, restore_dirs):
         backups_dir, source_dir, dest_dir = restore_dirs
         (source_dir / "file1.txt").write_text("content1")
@@ -163,6 +181,22 @@ class TestVerifyRestored:
 
         src_name = os.path.basename(str(source_dir))
         (dest_dir / src_name / "file1.txt").write_text("corrupted")
+
+        mismatches = restore.verify_restored(snapshot, str(dest_dir))
+        assert mismatches == [os.path.join(src_name, "file1.txt")]
+
+    def test_verify_refuses_symlinked_dest_escape(self, restore_dirs):
+        backups_dir, source_dir, dest_dir = restore_dirs
+        (source_dir / "file1.txt").write_text("content1")
+
+        snapshot = _make_snapshot(backups_dir, source_dir)
+        src_name = os.path.basename(str(source_dir))
+
+        outside = restore_dirs[2].parent / "outside"
+        outside.mkdir()
+        (outside / "file1.txt").write_text("content1")
+        dest_dir.mkdir()
+        (dest_dir / src_name).symlink_to(outside, target_is_directory=True)
 
         mismatches = restore.verify_restored(snapshot, str(dest_dir))
         assert mismatches == [os.path.join(src_name, "file1.txt")]
