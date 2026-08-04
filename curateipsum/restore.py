@@ -4,7 +4,7 @@ destination directory.
 """
 import logging
 import os
-from typing import List, Optional, Tuple, Union
+from typing import Iterable, List, Optional, Tuple, Union
 
 from curateipsum import backup, fs
 
@@ -35,16 +35,19 @@ def _under_any(relpath: str, rel_paths: List[str]) -> bool:
 def plan_restore(
     snapshot_entry: Union[os.DirEntry, fs.PseudoDirEntry],
     rel_paths: Optional[List[str]] = None,
-) -> List[Tuple[Union[os.DirEntry, fs.PseudoDirEntry], str]]:
+) -> Iterable[Tuple[Union[os.DirEntry, fs.PseudoDirEntry], str]]:
     """
-    Build the ordered list of (entry, relpath) pairs a restore would copy,
-    directories before their contents (fs.scantree's default order, which
-    copy_direntry() depends on so a directory exists before anything is
-    written into it). Skips snapshot-internal bookkeeping entries (backup
-    marker, delta dir). If rel_paths is given, only entries at or under
-    one of those snapshot-relative paths are included.
+    Yield (entry, relpath) pairs a restore would copy, directories before
+    their contents (fs.scantree's default order, which copy_direntry()
+    depends on so a directory exists before anything is written into it).
+    Skips snapshot-internal bookkeeping entries (backup marker, delta
+    dir). If rel_paths is given, only entries at or under one of those
+    snapshot-relative paths are included.
+
+    A generator rather than a list: fs.scantree() already streams, and a
+    snapshot can hold far more entries than comfortably fit in memory at
+    once.
     """
-    result = []
     for entry in fs.scantree(snapshot_entry.path):
         relpath = os.path.relpath(entry.path, snapshot_entry.path)
         top_name = relpath.split(os.sep, 1)[0]
@@ -52,8 +55,7 @@ def plan_restore(
             continue
         if rel_paths is not None and not _under_any(relpath, rel_paths):
             continue
-        result.append((entry, relpath))
-    return result
+        yield entry, relpath
 
 
 def restore_snapshot(

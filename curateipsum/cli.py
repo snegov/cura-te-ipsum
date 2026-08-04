@@ -183,8 +183,12 @@ def _run_restore(args) -> int:
 
     # Locked for the same reason a backup is: retention could otherwise
     # delete or quarantine the very snapshot this restore is reading from
-    # while it's still in progress.
+    # while it's still in progress. set_backups_lock() already logs why
+    # (e.g. "Previous backup is still in progress") - add restore-specific
+    # context here so a restore failure doesn't read like a backup one.
     if not backup.set_backups_lock(backups_dir_abs, args.force):
+        _lg.error("Could not acquire the backups lock, restore aborted "
+                 "(use --force to wait for it instead)")
         return 1
 
     exit_code = 0
