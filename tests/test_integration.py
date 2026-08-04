@@ -1081,3 +1081,33 @@ def test_external_rsync_snapshot_still_gets_checksums(integration_dirs):
     manifest = bk._read_manifest(bk._get_backup_marker(snapshot).path)
     assert manifest["checksums"]
     assert bk.verify_snapshot(snapshot) == []
+
+
+def test_fifo_excluded_and_recorded_without_blocking(integration_dirs):
+    """
+    A FIFO in the source must not block the backup (no writer is ever
+    attached), must not abort it, and must be recorded in the manifest
+    as an exclusion rather than silently disappearing.
+    """
+    backups_dir, source_dir = integration_dirs
+    (source_dir / "file1.txt").write_text("content1")
+    os.mkfifo(str(source_dir / "a_fifo"))
+
+    snapshot = bk.initiate_backup(
+        sources=[str(source_dir)],
+        backups_dir=str(backups_dir),
+        dry_run=False,
+    )
+
+    assert snapshot is not None
+    source_name = os.path.basename(str(source_dir))
+    manifest = bk._read_manifest(bk._get_backup_marker(snapshot).path)
+    assert manifest["excluded"] == {
+        os.path.join(source_name, "a_fifo"): "fifo"
+    }
+    assert not os.path.lexists(
+        os.path.join(snapshot.path, source_name, "a_fifo")
+    )
+    assert os.path.exists(
+        os.path.join(snapshot.path, source_name, "file1.txt")
+    )

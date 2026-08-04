@@ -159,12 +159,14 @@ def _ensure_repo_id(backups_dir: str) -> str:
 
 
 def _write_manifest(marker_path: str, backups_dir: str, snapshot_name: str,
-                    checksums: Optional[Dict[str, str]] = None):
+                    checksums: Optional[Dict[str, str]] = None,
+                    excluded: Optional[Dict[str, str]] = None):
     """Write and fsync the completion manifest for a finished snapshot."""
     manifest = json.dumps({
         "repo_id": _ensure_repo_id(backups_dir),
         "snapshot": snapshot_name,
         "checksums": checksums or {},
+        "excluded": excluded or {},
     })
     _write_small_file_no_follow(marker_path, manifest)
 
@@ -719,7 +721,8 @@ def process_backed_entry(backup_dir: str,
     - if DirEntry was not deleted, hardlink it to DELTA_DIR.
     """
     _lg.debug("%s %s %s", action, entry_relpath, msg)
-    if action not in (fs.Actions.ERROR, fs.Actions.DELETE):
+    if action not in (fs.Actions.ERROR, fs.Actions.DELETE,
+                      fs.Actions.EXCLUDE):
         fs.nest_hardlink(src_dir=backup_dir, src_relpath=entry_relpath,
                          dst_dir=os.path.join(backup_dir, DELTA_DIR))
 
@@ -802,6 +805,11 @@ def initiate_backup(sources,
     # keyed by its path relative to the snapshot root. Recorded in the
     # manifest so a completed snapshot's integrity can be verified later.
     checksums: Dict[str, str] = {}
+    # Entries this run deliberately never backed up (sockets, FIFOs,
+    # devices, ...), keyed by path relative to the snapshot root, valued
+    # with the excluded kind. Recorded in the manifest so an exclusion is
+    # a visible, auditable result rather than a silent gap.
+    excluded: Dict[str, str] = {}
     try:
         for src in sources:
             src_abs = os.path.abspath(src)
@@ -817,6 +825,8 @@ def initiate_backup(sources,
                         "Failed to copy %s: %s" % (entry_relpath, msg)
                     )
                 full_relpath = os.path.join(src_name, entry_relpath)
+                if action == fs.Actions.EXCLUDE:
+                    excluded[full_relpath] = msg
                 if action in (fs.Actions.CREATE, fs.Actions.REWRITE):
                     if msg:
                         # fs.rsync() already hashed the file while
@@ -832,15 +842,18 @@ def initiate_backup(sources,
                                 and not os.path.islink(full_path)):
                             checksums[full_relpath] = _sha256_file(full_path)
                 # TODO maybe should be run if first backup too?
-                if latest_backup is not None:
+                if latest_backup is not None and action != fs.Actions.EXCLUDE:
                     process_backed_entry(
                         backup_dir=staging.path,
                         entry_relpath=full_relpath,
                         action=action,
                         msg=msg,
                     )
-                # raise flag if something was changed since last backup
-                backup_changed = True
+                # raise flag if something was changed since last backup.
+                # A recurring exclusion (e.g. a FIFO that's always there)
+                # is not itself a change worth keeping a new snapshot for.
+                if action != fs.Actions.EXCLUDE:
+                    backup_changed = True
     except fs.BackupCreationError as err:
         _lg.error("Error during backup creation: %s", err)
         _lg.error("Failed to create backup %s, removing staging directory",
@@ -869,7 +882,8 @@ def initiate_backup(sources,
     # then atomically rename the staging dir into its final snapshot name
     marker_name = "%s_%s" % (BACKUP_MARKER, snapshot_name)
     _write_manifest(os.path.join(staging.path, marker_name),
-                    backups_dir, snapshot_name, checksums=checksums)
+                    backups_dir, snapshot_name, checksums=checksums,
+                    excluded=excluded)
     _fsync_dir(staging.path)
 
     final_path = os.path.join(backups_dir, snapshot_name)
