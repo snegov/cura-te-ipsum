@@ -709,3 +709,103 @@ class TestRsyncHardlinkImmutability:
 
         assert os.lstat(str(external_target)).st_mode == external_mode_before
         assert (external_target / "canary").read_text() == "do-not-touch"
+
+
+class TestEntryKind:
+    """Tests for fs.entry_kind() classification."""
+
+    def test_regular_file(self, tmp_path):
+        path = os.path.join(str(tmp_path), "f")
+        with open(path, "w") as f:
+            f.write("x")
+        with os.scandir(str(tmp_path)) as it:
+            entry = next(iter(it))
+        assert fs.entry_kind(entry) == "file"
+
+    def test_directory(self, tmp_path):
+        path = os.path.join(str(tmp_path), "d")
+        os.mkdir(path)
+        with os.scandir(str(tmp_path)) as it:
+            entry = next(iter(it))
+        assert fs.entry_kind(entry) == "dir"
+
+    def test_symlink(self, tmp_path):
+        target = os.path.join(str(tmp_path), "target")
+        link = os.path.join(str(tmp_path), "link")
+        with open(target, "w") as f:
+            f.write("x")
+        os.symlink(target, link)
+        with os.scandir(str(tmp_path)) as it:
+            entries = {e.name: e for e in it}
+        assert fs.entry_kind(entries["link"]) == "symlink"
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"),
+                        reason="os.mkfifo not available on this platform")
+    def test_fifo(self, tmp_path):
+        path = os.path.join(str(tmp_path), "fifo")
+        os.mkfifo(path)
+        with os.scandir(str(tmp_path)) as it:
+            entry = next(iter(it))
+        assert fs.entry_kind(entry) == "fifo"
+
+    @pytest.mark.skipif(not os.path.exists("/dev/null"),
+                        reason="no /dev/null on this platform")
+    def test_char_device(self):
+        entry = fs.PseudoDirEntry("/dev/null")
+        assert fs.entry_kind(entry) == "char_device"
+
+    @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"),
+                        reason="AF_UNIX not available on this platform")
+    def test_socket(self):
+        import tempfile
+        # AF_UNIX paths are capped at ~104-108 bytes; pytest's tmp_path
+        # nests too deep on macOS, so use a short-path tempdir directly.
+        with tempfile.TemporaryDirectory() as d:
+            sock_path = os.path.join(d, "s")
+            with socket.socket(socket.AF_UNIX) as sock:
+                sock.bind(sock_path)
+                with os.scandir(d) as it:
+                    entry = next(iter(it))
+                assert fs.entry_kind(entry) == "socket"
+
+
+class TestRsyncExcludesUnsupportedEntries:
+    """
+    Regression tests: rsync() must classify FIFOs/sockets/devices via
+    lstat() alone (never opening them) and exclude them with a visible
+    EXCLUDE action, instead of either blocking forever (a FIFO with no
+    writer) or treating them as a fatal Actions.ERROR that aborts the
+    whole backup.
+    """
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"),
+                        reason="os.mkfifo not available on this platform")
+    def test_fifo_without_writer_does_not_block(self, common_fs_dirs):
+        src_dir, dst_dir = common_fs_dirs
+        fifo_path = os.path.join(str(src_dir), "a_fifo")
+        os.mkfifo(fifo_path)
+
+        # No writer is ever opened on the other end. If rsync() opened
+        # this for reading, this test would hang instead of failing.
+        results = list(fs.rsync(str(src_dir), str(dst_dir)))
+
+        assert ("a_fifo", fs.Actions.EXCLUDE, "fifo") in results
+        assert not os.path.lexists(os.path.join(str(dst_dir), "a_fifo"))
+
+    @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"),
+                        reason="AF_UNIX not available on this platform")
+    def test_socket_is_excluded_not_fatal(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            src_dir = os.path.join(d, "src")
+            dst_dir = os.path.join(d, "dst")
+            os.mkdir(src_dir)
+            os.mkdir(dst_dir)
+            sock_path = os.path.join(src_dir, "a_socket")
+            with socket.socket(socket.AF_UNIX) as sock:
+                sock.bind(sock_path)
+                results = list(fs.rsync(src_dir, dst_dir))
+
+            assert ("a_socket", fs.Actions.EXCLUDE, "socket") in results
+            assert fs.Actions.ERROR not in [r[1] for r in results]
+            assert not os.path.lexists(os.path.join(dst_dir, "a_socket"))

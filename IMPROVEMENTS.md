@@ -106,11 +106,11 @@ Acceptance criteria:
 
 ### Handle special filesystem entries explicitly
 
-- [ ] Distinguish regular files, directories, symlinks, sockets, FIFOs, block
+- [x] Distinguish regular files, directories, symlinks, sockets, FIFOs, block
   devices, and character devices.
-- [ ] Never open an unsupported entry as a regular file.
-- [ ] Define a fail or recorded-exclusion policy for every unsupported type.
-- [ ] Record exclusions in the snapshot manifest.
+- [x] Never open an unsupported entry as a regular file.
+- [x] Define a fail or recorded-exclusion policy for every unsupported type.
+- [x] Record exclusions in the snapshot manifest.
 
 Acceptance criteria:
 

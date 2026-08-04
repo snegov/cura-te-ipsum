@@ -7,6 +7,7 @@ import glob
 import hashlib
 import logging
 import os
+import stat
 import subprocess
 import sys
 import uuid
@@ -28,6 +29,40 @@ class Actions(enum.Enum):
     UPDATE_OWNER = enum.auto()
     CREATE = enum.auto()
     ERROR = enum.auto()
+    EXCLUDE = enum.auto()
+
+
+# Entry kinds copy_direntry() knows how to back up. Everything else
+# (FIFOs, sockets, block/char devices, and anything lstat() doesn't
+# recognize) is classified and excluded without ever being opened - a
+# FIFO with no writer would otherwise block open() for read forever, and
+# reading a device node can return unbounded or meaningless data.
+_SUPPORTED_KINDS = frozenset({"file", "dir", "symlink"})
+
+
+def entry_kind(entry: Union[os.DirEntry, "PseudoDirEntry"]) -> str:
+    """
+    Classify a filesystem entry via lstat() mode bits alone - never
+    opens it, so classifying a FIFO can't block even without a writer.
+    :return: one of "file", "dir", "symlink", "fifo", "socket",
+        "block_device", "char_device", "unknown".
+    """
+    mode = entry.stat(follow_symlinks=False).st_mode
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    if stat.S_ISDIR(mode):
+        return "dir"
+    if stat.S_ISREG(mode):
+        return "file"
+    if stat.S_ISFIFO(mode):
+        return "fifo"
+    if stat.S_ISSOCK(mode):
+        return "socket"
+    if stat.S_ISBLK(mode):
+        return "block_device"
+    if stat.S_ISCHR(mode):
+        return "char_device"
+    return "unknown"
 
 
 class PseudoDirEntry:
@@ -202,15 +237,19 @@ def scantree(path, dir_first=True) -> Iterable[os.DirEntry]:
 
 
 def rm_direntry(entry: Union[os.DirEntry, PseudoDirEntry]):
-    """ Recursively delete DirEntry (dir/file/symlink). """
-    if entry.is_file(follow_symlinks=False) or entry.is_symlink():
-        os.unlink(entry.path)
-    elif entry.is_dir(follow_symlinks=False):
+    """
+    Recursively delete DirEntry. Directories are removed recursively;
+    anything else (file, symlink, or a special entry like a FIFO,
+    socket, or device node) is unlinked directly.
+    """
+    if entry.is_dir(follow_symlinks=False):
         with os.scandir(entry.path) as it:
             child_entry: os.DirEntry
             for child_entry in it:
                 rm_direntry(child_entry)
         os.rmdir(entry.path)
+    else:
+        os.unlink(entry.path)
 
 
 try:
@@ -429,6 +468,21 @@ def rsync(src_dir,
         del src_files_map[rel_path]
 
         src_entry: os.DirEntry
+        src_kind = entry_kind(src_entry)
+        if src_kind not in _SUPPORTED_KINDS:
+            _lg.warning("Rsync, excluding unsupported entry (%s): %s",
+                       src_kind, rel_path)
+            # dst_entry may exist here (e.g. inherited via hardlink from
+            # the previous snapshot); an excluded entry must not linger.
+            if not dry_run:
+                try:
+                    rm_direntry(dst_entry)
+                except OSError as exc:
+                    yield rel_path, Actions.ERROR, str(exc)
+                    continue
+            yield rel_path, Actions.EXCLUDE, src_kind
+            continue
+
         # rewrite dst if it has different type from src
         if src_entry.is_file(follow_symlinks=False):
             if not dst_entry.is_file(follow_symlinks=False):
@@ -543,6 +597,13 @@ def rsync(src_dir,
 
     # process remained source entries (new files/dirs/symlinks)
     for rel_path, src_entry in src_files_map.items():
+        src_kind = entry_kind(src_entry)
+        if src_kind not in _SUPPORTED_KINDS:
+            _lg.warning("Rsync, excluding unsupported entry (%s): %s",
+                       src_kind, rel_path)
+            yield rel_path, Actions.EXCLUDE, src_kind
+            continue
+
         dst_path = os.path.join(dst_root_abs, rel_path)
         _lg.debug("Rsync, creating: %s", rel_path)
         try:
