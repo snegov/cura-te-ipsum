@@ -136,17 +136,24 @@ class TestRsync:
         assert os.path.lexists(dst_path)
         assert os.path.isdir(dst_path)
 
-    def test_src_is_socket(self, common_fs_dirs):
-        src_dir, dst_dir = common_fs_dirs
-        src_spath = create_file(str(src_dir))
-        dst_spath = os.path.join(str(dst_dir),
-                                 relpath(src_spath, str(src_dir), str(dst_dir)))
-        os.unlink(src_spath)
-        sock = socket.socket(socket.AF_UNIX)
-        sock.bind(src_spath)
+    @pytest.mark.skipif(not hasattr(socket, "AF_UNIX"),
+                        reason="AF_UNIX not available on this platform")
+    def test_src_is_socket(self):
+        import tempfile
+        # AF_UNIX paths are capped at ~104-108 bytes; pytest's tmp_path
+        # nests too deep on macOS, so use a short-path tempdir directly.
+        with tempfile.TemporaryDirectory() as d:
+            src_dir = os.path.join(d, "src")
+            dst_dir = os.path.join(d, "dst")
+            os.mkdir(src_dir)
+            os.mkdir(dst_dir)
+            src_spath = os.path.join(src_dir, "a_socket")
+            dst_spath = os.path.join(dst_dir, "a_socket")
+            with socket.socket(socket.AF_UNIX) as sock:
+                sock.bind(src_spath)
+                all(fs.rsync(src_dir, dst_dir))
 
-        all(fs.rsync(str(src_dir), str(dst_dir)))
-        assert not os.path.lexists(dst_spath)
+            assert not os.path.lexists(dst_spath)
 
     def test_src_dst_same_inode(self, common_fs_dirs):
         src_dir, dst_dir = common_fs_dirs
