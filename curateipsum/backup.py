@@ -1,6 +1,7 @@
 """
 Module with backup functions.
 """
+import hashlib
 import json
 import logging
 import os
@@ -157,11 +158,13 @@ def _ensure_repo_id(backups_dir: str) -> str:
     return repo_id
 
 
-def _write_manifest(marker_path: str, backups_dir: str, snapshot_name: str):
+def _write_manifest(marker_path: str, backups_dir: str, snapshot_name: str,
+                    checksums: Optional[Dict[str, str]] = None):
     """Write and fsync the completion manifest for a finished snapshot."""
     manifest = json.dumps({
         "repo_id": _ensure_repo_id(backups_dir),
         "snapshot": snapshot_name,
+        "checksums": checksums or {},
     })
     _write_small_file_no_follow(marker_path, manifest)
 
@@ -190,6 +193,49 @@ def _read_manifest(marker_path: str) -> Union[dict, object, None]:
         return json.loads(content)
     except ValueError:
         return None
+
+
+def _sha256_file(path: str) -> str:
+    """sha256 hex digest of a file's current on-disk content."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_snapshot(backup_entry: Union[os.DirEntry, fs.PseudoDirEntry]
+                    ) -> List[str]:
+    """
+    Verify a completed snapshot against the checksums recorded in its
+    manifest at backup time. Only files freshly copied or rewritten
+    during that run have a recorded checksum - files inherited unchanged
+    via hardlink from an earlier snapshot are not re-hashed here, since
+    they're covered by that earlier snapshot's own verification.
+
+    :return: relative paths whose current content no longer matches its
+        recorded checksum, or that are missing. Empty means verified OK.
+    :raises BackupFailedError: if the manifest itself is missing, legacy,
+        or corrupt - there's nothing to verify against.
+    """
+    manifest = _read_manifest(_get_backup_marker(backup_entry).path)
+    if manifest is None or manifest is _LEGACY_MANIFEST:
+        raise BackupFailedError(
+            "Cannot verify %s: missing, corrupt, or pre-migration manifest"
+            % backup_entry.name
+        )
+
+    mismatches = []
+    for relpath, expected_digest in manifest.get("checksums", {}).items():
+        full_path = os.path.join(backup_entry.path, relpath)
+        try:
+            actual_digest = _sha256_file(full_path)
+        except OSError:
+            mismatches.append(relpath)
+            continue
+        if actual_digest != expected_digest:
+            mismatches.append(relpath)
+    return mismatches
 
 
 def _verify_safe_to_delete(entry: os.DirEntry, backups_dir_abs: str,
@@ -752,6 +798,10 @@ def initiate_backup(sources,
     rsync_func = fs.rsync_ext if external_rsync else fs.rsync
 
     backup_changed = False
+    # sha256 digest of every freshly-copied-or-rewritten file this run,
+    # keyed by its path relative to the snapshot root. Recorded in the
+    # manifest so a completed snapshot's integrity can be verified later.
+    checksums: Dict[str, str] = {}
     try:
         for src in sources:
             src_abs = os.path.abspath(src)
@@ -766,11 +816,26 @@ def initiate_backup(sources,
                     raise BackupFailedError(
                         "Failed to copy %s: %s" % (entry_relpath, msg)
                     )
+                full_relpath = os.path.join(src_name, entry_relpath)
+                if action in (fs.Actions.CREATE, fs.Actions.REWRITE):
+                    if msg:
+                        # fs.rsync() already hashed the file while
+                        # copying it.
+                        checksums[full_relpath] = msg
+                    else:
+                        # fs.rsync_ext() (external rsync) never returns a
+                        # digest - hash the copied file directly so
+                        # verify_snapshot() isn't silently a no-op when
+                        # external_rsync=True.
+                        full_path = os.path.join(staging.path, full_relpath)
+                        if (os.path.isfile(full_path)
+                                and not os.path.islink(full_path)):
+                            checksums[full_relpath] = _sha256_file(full_path)
                 # TODO maybe should be run if first backup too?
                 if latest_backup is not None:
                     process_backed_entry(
                         backup_dir=staging.path,
-                        entry_relpath=os.path.join(src_name, entry_relpath),
+                        entry_relpath=full_relpath,
                         action=action,
                         msg=msg,
                     )
@@ -804,7 +869,7 @@ def initiate_backup(sources,
     # then atomically rename the staging dir into its final snapshot name
     marker_name = "%s_%s" % (BACKUP_MARKER, snapshot_name)
     _write_manifest(os.path.join(staging.path, marker_name),
-                    backups_dir, snapshot_name)
+                    backups_dir, snapshot_name, checksums=checksums)
     _fsync_dir(staging.path)
 
     final_path = os.path.join(backups_dir, snapshot_name)

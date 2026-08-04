@@ -164,6 +164,66 @@ class TestCopyFile:
         dst_stat = os.stat(dst_path)
         assert src_stat.st_mode == dst_stat.st_mode
 
+    def test_returns_sha256_of_content(self, tmp_path):
+        """copy_file returns the sha256 hex digest of the copied bytes"""
+        import hashlib
+        src_path = os.path.join(str(tmp_path), "source.txt")
+        dst_path = os.path.join(str(tmp_path), "dest.txt")
+        content = b"some content to hash"
+        with open(src_path, "wb") as f:
+            f.write(content)
+
+        digest = fs.copy_file(src_path, dst_path)
+
+        assert digest == hashlib.sha256(content).hexdigest()
+
+    def test_detects_source_truncated_during_copy(self, tmp_path):
+        """
+        A source file whose size changes between the read loop starting
+        and finishing (detected via fstat on the same descriptor) must
+        raise, not silently produce a truncated/inconsistent copy.
+        """
+        from unittest import mock
+
+        src_path = os.path.join(str(tmp_path), "source.txt")
+        dst_path = os.path.join(str(tmp_path), "dest.txt")
+        with open(src_path, "wb") as f:
+            f.write(b"x" * 1000)
+
+        real_read = os.read
+        call_count = {"n": 0}
+
+        def read_then_truncate(fd, n):
+            call_count["n"] += 1
+            data = real_read(fd, n)
+            if call_count["n"] == 1:
+                os.truncate(src_path, 10)
+            return data
+
+        with mock.patch("os.read", side_effect=read_then_truncate):
+            with pytest.raises(fs.BackupCreationError):
+                fs.copy_file(src_path, dst_path)
+
+    def test_partial_write_is_completed(self, tmp_path):
+        """os.write() may write fewer bytes than given; copy_file must
+        loop until everything requested has actually been written."""
+        from unittest import mock
+
+        src_path = os.path.join(str(tmp_path), "source.txt")
+        dst_path = os.path.join(str(tmp_path), "dest.txt")
+        content = b"y" * 5000
+        with open(src_path, "wb") as f:
+            f.write(content)
+
+        real_write = os.write
+        with mock.patch("os.write",
+                        side_effect=lambda fd, data: real_write(
+                            fd, bytes(data)[:1])):
+            fs.copy_file(src_path, dst_path)
+
+        with open(dst_path, "rb") as f:
+            assert f.read() == content
+
 
 class TestCopyDirEntry:
     """Test suite for copy_direntry function."""

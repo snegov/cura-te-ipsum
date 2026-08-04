@@ -973,3 +973,111 @@ class TestErrorRecovery:
         backups = [b for b in os.listdir(str(backups_dir))
                    if not b.startswith(".")]
         assert len(backups) == 1
+
+
+def test_completed_snapshot_passes_manifest_verification(integration_dirs):
+    """A completed snapshot's checksums must verify against its content."""
+    backups_dir, source_dir = integration_dirs
+    (source_dir / "file1.txt").write_text("content1")
+    (source_dir / "file2.txt").write_text("content2")
+
+    snapshot = bk.initiate_backup(
+        sources=[str(source_dir)],
+        backups_dir=str(backups_dir),
+        dry_run=False,
+    )
+
+    assert bk.verify_snapshot(snapshot) == []
+
+
+def test_verify_snapshot_detects_corruption(integration_dirs):
+    """Corrupting a file after backup must be caught by verify_snapshot."""
+    backups_dir, source_dir = integration_dirs
+    (source_dir / "file1.txt").write_text("content1")
+
+    snapshot = bk.initiate_backup(
+        sources=[str(source_dir)],
+        backups_dir=str(backups_dir),
+        dry_run=False,
+    )
+
+    source_name = os.path.basename(str(source_dir))
+    backed_up_file = os.path.join(
+        snapshot.path, source_name, "file1.txt"
+    )
+    with open(backed_up_file, "w") as f:
+        f.write("corrupted")
+
+    mismatches = bk.verify_snapshot(snapshot)
+    assert os.path.join(source_name, "file1.txt") in mismatches
+
+
+def test_source_changed_during_copy_fails_backup(integration_dirs,
+                                                   monkeypatch):
+    """
+    A source file that changes size while being copied must fail the
+    whole backup rather than produce an inconsistent snapshot.
+    """
+    backups_dir, source_dir = integration_dirs
+    src_file = source_dir / "changing.txt"
+    src_file.write_text("x" * 1000)
+
+    real_read = os.read
+    call_count = {"n": 0}
+
+    def read_then_truncate(fd, n):
+        call_count["n"] += 1
+        data = real_read(fd, n)
+        if call_count["n"] == 1:
+            os.truncate(str(src_file), 10)
+        return data
+
+    monkeypatch.setattr(os, "read", read_then_truncate)
+
+    with pytest.raises(bk.BackupFailedError):
+        bk.initiate_backup(
+            sources=[str(source_dir)],
+            backups_dir=str(backups_dir),
+            dry_run=False,
+        )
+
+    # no completed snapshot must exist after the failure
+    backups = [b for b in os.listdir(str(backups_dir))
+              if not b.startswith(".")]
+    assert backups == []
+
+
+@pytest.mark.skipif(not RSYNC_AVAILABLE, reason="rsync not available")
+def test_external_rsync_snapshot_still_gets_checksums(integration_dirs):
+    """
+    fs.rsync_ext() (external rsync) never yields a digest in msg, unlike
+    fs.rsync() - initiate_backup() must hash the copied files itself in
+    that case, or verify_snapshot() silently becomes a no-op whenever
+    --external-rsync is used.
+    """
+    backups_dir, source_dir = integration_dirs
+    (source_dir / "file1.txt").write_text("content1")
+
+    # Establish baseline with Python rsync first, same as
+    # test_external_rsync_creates_backup: a from-scratch external-rsync
+    # run emits a "created directory ..." header line this codebase's
+    # itemize-output parser doesn't handle, which is an unrelated,
+    # pre-existing limitation.
+    bk.initiate_backup(
+        sources=[str(source_dir)],
+        backups_dir=str(backups_dir),
+        dry_run=False,
+    )
+    time.sleep(1.1)
+    (source_dir / "file2.txt").write_text("content2")
+
+    snapshot = bk.initiate_backup(
+        sources=[str(source_dir)],
+        backups_dir=str(backups_dir),
+        dry_run=False,
+        external_rsync=True,
+    )
+
+    manifest = bk._read_manifest(bk._get_backup_marker(snapshot).path)
+    assert manifest["checksums"]
+    assert bk.verify_snapshot(snapshot) == []
