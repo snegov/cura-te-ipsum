@@ -237,15 +237,19 @@ def scantree(path, dir_first=True) -> Iterable[os.DirEntry]:
 
 
 def rm_direntry(entry: Union[os.DirEntry, PseudoDirEntry]):
-    """ Recursively delete DirEntry (dir/file/symlink). """
-    if entry.is_file(follow_symlinks=False) or entry.is_symlink():
-        os.unlink(entry.path)
-    elif entry.is_dir(follow_symlinks=False):
+    """
+    Recursively delete DirEntry. Directories are removed recursively;
+    anything else (file, symlink, or a special entry like a FIFO,
+    socket, or device node) is unlinked directly.
+    """
+    if entry.is_dir(follow_symlinks=False):
         with os.scandir(entry.path) as it:
             child_entry: os.DirEntry
             for child_entry in it:
                 rm_direntry(child_entry)
         os.rmdir(entry.path)
+    else:
+        os.unlink(entry.path)
 
 
 try:
