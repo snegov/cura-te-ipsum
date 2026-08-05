@@ -156,7 +156,7 @@ Acceptance criteria:
 ### Strengthen tests and CI
 
 - [x] Run CI on pull requests as well as pushes.
-- [ ] Add macOS CI because macOS is an advertised platform.
+- [x] Add macOS CI because macOS is an advertised platform.
 - [x] Fix the Unix-socket path test that currently fails on a local macOS run.
 - [ ] Replace nonexistent issue references in `xfail` markers with real tracked
   work, then remove the markers as fixes land.
