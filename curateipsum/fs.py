@@ -219,17 +219,35 @@ def rsync_ext(src, dst, dry_run=False) -> Iterable[Tuple[str, Actions, str]]:
     process.wait()
 
 
-def scantree(path, dir_first=True) -> Iterable[os.DirEntry]:
+def scantree(path, dir_first=True,
+             one_filesystem=False, _root_dev=None) -> Iterable[os.DirEntry]:
     """
     Recursively yield DirEntry objects (dir/file/symlink) for given directory.
+
+    :param one_filesystem: if True, don't descend into a subdirectory that
+        lives on a different device than `path` (a mount point). The
+        directory itself is still yielded, so it appears as an empty
+        directory in the walk - only its contents are excluded. Matches
+        rsync's --one-file-system behavior.
     """
+    if one_filesystem and _root_dev is None:
+        _root_dev = os.lstat(path).st_dev
+
     entry: os.DirEntry
     with os.scandir(path) as scan_it:
         for entry in scan_it:
             if entry.is_dir(follow_symlinks=False):
+                if (one_filesystem
+                        and os.lstat(entry.path).st_dev != _root_dev):
+                    _lg.warning(
+                        "Scantree, excluding mount point contents: %s",
+                        entry.path)
+                    yield entry
+                    continue
                 if dir_first:
                     yield entry
-                yield from scantree(entry.path, dir_first)
+                yield from scantree(entry.path, dir_first,
+                                    one_filesystem, _root_dev)
                 if not dir_first:
                     yield entry
             else:
@@ -445,7 +463,8 @@ def rsync(src_dir,
 
     # Create source map {rel_path: dir_entry}
     src_files_map = {
-        ent.path[len(src_root_abs) + 1:]: ent for ent in scantree(src_root_abs)
+        ent.path[len(src_root_abs) + 1:]: ent
+        for ent in scantree(src_root_abs, one_filesystem=True)
     }
 
     # process dst tree
@@ -613,7 +632,8 @@ def rsync(src_dir,
             yield rel_path, Actions.ERROR, str(exc)
 
     # restore dir mtimes in dst, updated by updating files
-    for src_entry in scantree(src_root_abs, dir_first=True):
+    for src_entry in scantree(src_root_abs, dir_first=True,
+                              one_filesystem=True):
         if not src_entry.is_dir(follow_symlinks=False):
             continue
         rel_path = src_entry.path[len(src_root_abs) + 1:]
