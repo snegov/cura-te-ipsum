@@ -571,6 +571,24 @@ class TestScantree:
         # ...but its contents are excluded
         assert "other_fs_file.txt" not in names
 
+    def test_one_filesystem_root_via_symlink(self, tmp_path):
+        """A symlinked walk root must use the target's device, not its
+        own - scandir() follows the symlink to list real subdirectories,
+        which must not appear to be on a different device than the root."""
+        real_root = tmp_path / "real_root"
+        real_root.mkdir()
+        subdir = real_root / "dir1"
+        subdir.mkdir()
+        (subdir / "file.txt").write_text("content")
+
+        link_root = tmp_path / "link_root"
+        link_root.symlink_to(real_root)
+
+        entries = list(fs.scantree(str(link_root), one_filesystem=True))
+        names = [os.path.basename(e.path) for e in entries]
+        assert "dir1" in names
+        assert "file.txt" in names
+
     def test_one_filesystem_same_device_unaffected(self, tmp_path):
         """With one_filesystem, a same-device tree is fully scanned."""
         subdir = tmp_path / "dir1"

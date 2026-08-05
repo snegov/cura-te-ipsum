@@ -181,6 +181,7 @@ def rsync_ext(src, dst, dry_run=False) -> Iterable[Tuple[str, Actions, str]]:
     # rsync_args.append("--inplace")
     rsync_args.append("--whole-file")
     rsync_args.append("--human-readable")
+    rsync_args.append("--one-file-system")
     rsync_args.append("--delete-during")
     rsync_args.append("--itemize-changes")
     rsync_args.append(f"{src}/")
@@ -231,7 +232,10 @@ def scantree(path, dir_first=True,
         rsync's --one-file-system behavior.
     """
     if one_filesystem and _root_dev is None:
-        _root_dev = os.lstat(path).st_dev
+        # os.stat(), not os.lstat(): scandir() follows `path` if it's a
+        # symlink, so the root device must be the resolved directory's,
+        # not the symlink's own.
+        _root_dev = os.stat(path).st_dev
 
     entry: os.DirEntry
     with os.scandir(path) as scan_it:
