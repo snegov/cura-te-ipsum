@@ -48,8 +48,12 @@ class TestHardlinkDir:
         src_dir, dst_dir = hardlink_dirs
         cf_relpath = relpath(create_file(src_dir), src_dir, dst_dir)
         sl2cf_relpath = "symlink_to_common_file"
-        os.chdir(src_dir)
-        os.symlink(cf_relpath, sl2cf_relpath)
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(src_dir)
+            os.symlink(cf_relpath, sl2cf_relpath)
+        finally:
+            os.chdir(original_cwd)
 
         fs.hardlink_dir(src_dir, dst_dir)
 
