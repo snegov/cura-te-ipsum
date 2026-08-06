@@ -521,6 +521,85 @@ class TestScantree:
         sub1_idx = names.index("sub1.txt")
         assert dir1_idx < sub1_idx
 
+    def test_one_filesystem_default_crosses_mount_points(self, tmp_path,
+                                                          monkeypatch):
+        """Without one_filesystem, a simulated mount point is descended."""
+        mount_dir = tmp_path / "mount"
+        mount_dir.mkdir()
+        (mount_dir / "other_fs_file.txt").write_text("content")
+
+        real_lstat = os.lstat
+
+        def fake_lstat(path, *args, **kwargs):
+            st = real_lstat(path, *args, **kwargs)
+            if os.path.abspath(path) == str(mount_dir):
+                fields = list(st)
+                fields[2] = st.st_dev + 1  # st_dev
+                st = os.stat_result(fields)
+            return st
+
+        monkeypatch.setattr(os, "lstat", fake_lstat)
+
+        entries = list(fs.scantree(str(tmp_path)))
+        names = [os.path.basename(e.path) for e in entries]
+        assert "other_fs_file.txt" in names
+
+    def test_one_filesystem_excludes_mount_point_contents(self, tmp_path,
+                                                           monkeypatch):
+        """With one_filesystem, a mount point's contents are excluded."""
+        mount_dir = tmp_path / "mount"
+        mount_dir.mkdir()
+        (mount_dir / "other_fs_file.txt").write_text("content")
+
+        real_lstat = os.lstat
+
+        def fake_lstat(path, *args, **kwargs):
+            st = real_lstat(path, *args, **kwargs)
+            if os.path.abspath(path) == str(mount_dir):
+                fields = list(st)
+                fields[2] = st.st_dev + 1  # st_dev
+                st = os.stat_result(fields)
+            return st
+
+        monkeypatch.setattr(os, "lstat", fake_lstat)
+
+        entries = list(fs.scantree(str(tmp_path), one_filesystem=True))
+        names = [os.path.basename(e.path) for e in entries]
+
+        # the mount point directory itself is still present...
+        assert "mount" in names
+        # ...but its contents are excluded
+        assert "other_fs_file.txt" not in names
+
+    def test_one_filesystem_root_via_symlink(self, tmp_path):
+        """A symlinked walk root must use the target's device, not its
+        own - scandir() follows the symlink to list real subdirectories,
+        which must not appear to be on a different device than the root."""
+        real_root = tmp_path / "real_root"
+        real_root.mkdir()
+        subdir = real_root / "dir1"
+        subdir.mkdir()
+        (subdir / "file.txt").write_text("content")
+
+        link_root = tmp_path / "link_root"
+        link_root.symlink_to(real_root)
+
+        entries = list(fs.scantree(str(link_root), one_filesystem=True))
+        names = [os.path.basename(e.path) for e in entries]
+        assert "dir1" in names
+        assert "file.txt" in names
+
+    def test_one_filesystem_same_device_unaffected(self, tmp_path):
+        """With one_filesystem, a same-device tree is fully scanned."""
+        subdir = tmp_path / "dir1"
+        subdir.mkdir()
+        (subdir / "file.txt").write_text("content")
+
+        entries = list(fs.scantree(str(tmp_path), one_filesystem=True))
+        names = [os.path.basename(e.path) for e in entries]
+        assert "dir1" in names
+        assert "file.txt" in names
+
 
 class TestRmDirentry:
     """Test suite for rm_direntry function."""

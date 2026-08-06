@@ -474,6 +474,7 @@ class TestRsyncExt:
             assert "--human-readable" in args
             assert "--delete-during" in args
             assert "--itemize-changes" in args
+            assert "--one-file-system" in args
             assert args[-2] == f"{src}/"
             assert args[-1] == str(dst)
 
