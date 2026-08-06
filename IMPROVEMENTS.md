@@ -141,7 +141,7 @@ Acceptance criteria:
 - [x] Document behavior for ACLs, xattrs, flags, sparse files, source hardlinks,
   ownership, permissions, and timestamps.
 - [x] Add an explicit one-filesystem policy.
-- [ ] Make Python and external implementations provide equivalent guarantees or
+- [x] Make Python and external implementations provide equivalent guarantees or
   document every difference.
 - [ ] Test supported behavior on Linux and macOS.
 
