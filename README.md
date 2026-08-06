@@ -223,6 +223,20 @@ backups/
   root.** In the Python backend a failed `chown` is caught and logged,
   not fatal; with `--external-rsync`, rsync itself just skips
   ownership it isn't permitted to set.
+- **Do not mix backends across runs of the same backup.** The default
+  Python backend excludes special entries (see above) and its default
+  hardlink-forward step only understands files, symlinks, and
+  directories - it raises an error on anything else. `--external-rsync`
+  can recreate device nodes and sockets (as `root`, via `--archive`'s
+  `-D`), so a snapshot it created can contain entries the Python
+  backend's hardlinker cannot carry forward into the next backup. Pick
+  one of `--external-rsync`/`--external-hardlink` or the Python
+  defaults and use it consistently for a given backup destination.
+- **`--dry-run` behaves differently per backend, though neither leaves
+  a lasting change.** With `--external-rsync`, rsync itself performs no
+  I/O. With the Python backend, files are still fully copied into a
+  throwaway staging directory, which is then deleted - correct, but
+  slower and more I/O-heavy than the external backend's dry run.
 
 ## Development
 
