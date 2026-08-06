@@ -205,6 +205,21 @@ backups/
 - **Symlinks are preserved as symlinks**, including ones pointing
   outside the source tree - their targets are never followed or
   copied.
+- **ACLs, extended attributes, and filesystem-specific flags (e.g.
+  BSD/macOS `chflags`) are never preserved**, by either implementation.
+  The Python backend never reads or sets them; `--external-rsync` uses
+  `--archive` without `-A`/`-X`/`--fileflags`, so they're dropped too.
+- **Sparse files are not preserved as sparse.** Both implementations
+  do a whole-file copy (`--whole-file` for external rsync), so holes
+  are read and rewritten as allocated zero blocks in the backup.
+- **Hardlinks between source files are not preserved as hardlinks.**
+  Each hardlinked source file is backed up as an independent file;
+  neither backend passes rsync's `-H`. Only hardlinks *within* the
+  backup repository (across snapshots) are meaningful.
+- **Mode and timestamps (nanosecond mtime) are always preserved.**
+  **Ownership (uid/gid) is preserved only when running as root** -
+  `chown` failures under a normal user are silently logged and
+  skipped, not fatal, for both backends.
 
 ## Development
 

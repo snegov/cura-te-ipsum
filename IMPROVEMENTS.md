@@ -138,7 +138,7 @@ Acceptance criteria:
 
 ### Define filesystem compatibility
 
-- [ ] Document behavior for ACLs, xattrs, flags, sparse files, source hardlinks,
+- [x] Document behavior for ACLs, xattrs, flags, sparse files, source hardlinks,
   ownership, permissions, and timestamps.
 - [x] Add an explicit one-filesystem policy.
 - [ ] Make Python and external implementations provide equivalent guarantees or
