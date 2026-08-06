@@ -233,10 +233,12 @@ backups/
   one of `--external-rsync`/`--external-hardlink` or the Python
   defaults and use it consistently for a given backup destination.
 - **`--dry-run` behaves differently per backend, though neither leaves
-  a lasting change.** With `--external-rsync`, rsync itself performs no
-  I/O. With the Python backend, files are still fully copied into a
-  throwaway staging directory, which is then deleted - correct, but
-  slower and more I/O-heavy than the external backend's dry run.
+  a lasting change.** With `--external-rsync`, rsync itself avoids
+  writing to the destination (it still reads and stats files to
+  compute what would change). With the Python backend, files are still
+  fully copied into a throwaway staging directory, which is then
+  deleted - correct, but slower and more I/O-heavy than the external
+  backend's dry run.
 
 ## Development
 
