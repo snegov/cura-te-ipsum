@@ -317,11 +317,11 @@ class TestCopyDirEntry:
         dst_stat = os.lstat(dst_path)
         assert dst_stat.st_mode == src_stat.st_mode
 
-    def test_copy_file_preserves_nanosecond_mtime(self, tmp_path):
+    def test_copy_file_preserves_nanosecond_timestamps(self, tmp_path):
         """README documents nanosecond mtime precision for the Python
         backend; whole-second os.utime() calls can't catch a backend
-        that silently truncates to second resolution, so this sets a
-        sub-second mtime explicitly."""
+        that silently truncates to second resolution, so this sets
+        sub-second atime/mtime explicitly."""
         src_path = os.path.join(str(tmp_path), "source.txt")
         dst_path = os.path.join(str(tmp_path), "dest.txt")
 
@@ -431,10 +431,10 @@ class TestCopyDirEntry:
             # just verify the symlink was created
             assert os.path.islink(dst_link)
 
-    def test_copy_symlink_preserves_nanosecond_mtime_if_supported(
+    def test_copy_symlink_preserves_nanosecond_timestamps_if_supported(
             self, tmp_path):
         """Same nanosecond-precision claim as
-        test_copy_file_preserves_nanosecond_mtime(), but for the
+        test_copy_file_preserves_nanosecond_timestamps(), but for the
         follow_symlinks=False code path in copy_direntry()."""
         target_path = os.path.join(str(tmp_path), "target.txt")
         src_link = os.path.join(str(tmp_path), "source_link")
