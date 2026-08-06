@@ -216,10 +216,13 @@ backups/
   Each hardlinked source file is backed up as an independent file;
   neither backend passes rsync's `-H`. Only hardlinks *within* the
   backup repository (across snapshots) are meaningful.
-- **Mode and timestamps (nanosecond mtime) are always preserved.**
-  **Ownership (uid/gid) is preserved only when running as root** -
-  `chown` failures under a normal user are silently logged and
-  skipped, not fatal, for both backends.
+- **Mode and timestamps are always preserved.** The Python backend
+  restores mtime with nanosecond precision; `--external-rsync`'s
+  precision depends on the installed rsync build and destination
+  filesystem. **Ownership (uid/gid) is preserved only when running as
+  root.** In the Python backend a failed `chown` is caught and logged,
+  not fatal; with `--external-rsync`, rsync itself just skips
+  ownership it isn't permitted to set.
 
 ## Development
 
