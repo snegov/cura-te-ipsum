@@ -459,6 +459,7 @@ class TestCopyDirEntry:
                     entry = e
                     break
 
+        assert entry is not None, "source_link not found via scandir"
         fs.copy_direntry(entry, dst_link)
 
         dst_stat = os.lstat(dst_link)
