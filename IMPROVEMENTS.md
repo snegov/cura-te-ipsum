@@ -143,7 +143,7 @@ Acceptance criteria:
 - [x] Add an explicit one-filesystem policy.
 - [x] Make Python and external implementations provide equivalent guarantees or
   document every difference.
-- [ ] Test supported behavior on Linux and macOS.
+- [x] Test supported behavior on Linux and macOS.
 
 ### Make dry-run genuinely non-mutating
 

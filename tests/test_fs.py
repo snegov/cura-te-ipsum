@@ -317,6 +317,27 @@ class TestCopyDirEntry:
         dst_stat = os.lstat(dst_path)
         assert dst_stat.st_mode == src_stat.st_mode
 
+    def test_copy_file_preserves_nanosecond_mtime(self, tmp_path):
+        """README documents nanosecond mtime precision for the Python
+        backend; whole-second os.utime() calls can't catch a backend
+        that silently truncates to second resolution, so this sets a
+        sub-second mtime explicitly."""
+        src_path = os.path.join(str(tmp_path), "source.txt")
+        dst_path = os.path.join(str(tmp_path), "dest.txt")
+
+        with open(src_path, "w") as f:
+            f.write("test content")
+        os.utime(src_path, ns=(1_000_000_000_123456789,
+                                2_000_000_000_987654321))
+
+        src_stat = os.lstat(src_path)
+        entry = fs.PseudoDirEntry(src_path)
+        fs.copy_direntry(entry, dst_path)
+
+        dst_stat = os.lstat(dst_path)
+        assert dst_stat.st_mtime_ns == src_stat.st_mtime_ns
+        assert dst_stat.st_atime_ns == src_stat.st_atime_ns
+
     def test_copy_directory_preserves_times(self, tmp_path):
         """Test that directory timestamps are preserved"""
         src_path = os.path.join(str(tmp_path), "srcdir")
@@ -409,6 +430,40 @@ class TestCopyDirEntry:
         else:
             # just verify the symlink was created
             assert os.path.islink(dst_link)
+
+    def test_copy_symlink_preserves_nanosecond_mtime_if_supported(
+            self, tmp_path):
+        """Same nanosecond-precision claim as
+        test_copy_file_preserves_nanosecond_mtime(), but for the
+        follow_symlinks=False code path in copy_direntry()."""
+        target_path = os.path.join(str(tmp_path), "target.txt")
+        src_link = os.path.join(str(tmp_path), "source_link")
+        dst_link = os.path.join(str(tmp_path), "dest_link")
+
+        with open(target_path, "w") as f:
+            f.write("target")
+        os.symlink(target_path, src_link)
+
+        if os.utime not in os.supports_follow_symlinks:
+            pytest.skip("OS doesn't support setting symlink timestamps")
+
+        os.utime(src_link, ns=(1_000_000_000_123456789,
+                                2_000_000_000_987654321),
+                 follow_symlinks=False)
+        orig_stat = os.lstat(src_link)
+
+        entry = None
+        with os.scandir(str(tmp_path)) as it:
+            for e in it:
+                if e.name == "source_link":
+                    entry = e
+                    break
+
+        fs.copy_direntry(entry, dst_link)
+
+        dst_stat = os.lstat(dst_link)
+        assert dst_stat.st_mtime_ns == orig_stat.st_mtime_ns
+        assert dst_stat.st_atime_ns == orig_stat.st_atime_ns
 
     def test_copy_file_preserves_ownership_if_root(self, tmp_path):
         """Test that file ownership is preserved (requires root)"""
