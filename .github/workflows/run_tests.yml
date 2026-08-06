@@ -1,6 +1,9 @@
 name: Run tests
 
-on: [push, pull_request]
+on:
+  pull_request:
+  push:
+    branches: [master]
 
 jobs:
   test:
@@ -8,8 +11,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest]
         python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+        include:
+          # macOS runners cost 10x Linux minutes - only test the oldest
+          # and newest supported Python there to catch platform-specific
+          # issues without running the full matrix twice.
+          - os: macos-latest
+            python-version: "3.8"
+          - os: macos-latest
+            python-version: "3.14"
 
     steps:
     - uses: actions/checkout@v6
