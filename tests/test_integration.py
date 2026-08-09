@@ -211,7 +211,8 @@ def test_dry_run_leaves_backups_dir_byte_for_byte_unchanged(integration_dirs):
     )
 
     def _snapshot_all_stats(root):
-        result = {}
+        st = os.lstat(root)
+        result = {root: (st.st_mode, st.st_mtime_ns, st.st_ino, st.st_size)}
         for dirpath, dirnames, filenames in os.walk(root):
             for name in dirnames + filenames:
                 path = os.path.join(dirpath, name)

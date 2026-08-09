@@ -29,6 +29,20 @@ def _normalize_argv(argv):
     return ["backup", *argv]
 
 
+def _nonneg_int(value: str) -> int:
+    """
+    argparse type for --keep-* options: a negative threshold shifts
+    retention comparisons into the future, which can make cleanup treat
+    every existing backup as eligible for deletion.
+    """
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(
+            "must be zero or a positive integer, got %r" % value
+        )
+    return parsed
+
+
 def _build_parser():
     parser = argparse.ArgumentParser(
         prog="cura-te-ipsum",
@@ -73,34 +87,34 @@ def _build_parser():
                                help="Use cp command for creating hardlink "
                                     "copies")
     backup_parser.add_argument("--keep-all",
-                               type=int,
+                               type=_nonneg_int,
                                default=7,
                                metavar="DAYS",
                                help="keep every backup up to this many days "
                                     "in the past (default: %(default)s)")
     backup_parser.add_argument("--keep-daily",
-                               type=int,
+                               type=_nonneg_int,
                                default=30,
                                metavar="DAYS",
                                help="keep one backup per day up to this "
                                     "many days in the past "
                                     "(default: %(default)s)")
     backup_parser.add_argument("--keep-weekly",
-                               type=int,
+                               type=_nonneg_int,
                                default=52,
                                metavar="WEEKS",
                                help="keep one backup per week up to this "
                                     "many weeks in the past "
                                     "(default: %(default)s)")
     backup_parser.add_argument("--keep-monthly",
-                               type=int,
+                               type=_nonneg_int,
                                default=12,
                                metavar="MONTHS",
                                help="keep one backup per month up to this "
                                     "many months in the past "
                                     "(default: %(default)s)")
     backup_parser.add_argument("--keep-yearly",
-                               type=int,
+                               type=_nonneg_int,
                                default=5,
                                metavar="YEARS",
                                help="keep one backup per year up to this "
@@ -293,7 +307,8 @@ def _run_restore(args) -> int:
             else:
                 _lg.info("Verified: restored content matches the manifest")
     finally:
-        backup.release_backups_lock(backups_dir_abs)
+        if not args.dry_run:
+            backup.release_backups_lock(backups_dir_abs)
 
     return exit_code
 
