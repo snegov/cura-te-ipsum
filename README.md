@@ -71,6 +71,17 @@ Optional Arguments:
   -v, --verbose         Enable debug logging
   --external-rsync      Use external rsync instead of Python implementation
   --external-hardlink   Use cp/gcp command for hardlinking
+  --keep-all DAYS       Keep every backup up to this many days in the past
+                        (default: 7)
+  --keep-daily DAYS     Keep one backup per day up to this many days in
+                        the past (default: 30)
+  --keep-weekly WEEKS   Keep one backup per week up to this many weeks in
+                        the past (default: 52)
+  --keep-monthly MONTHS
+                        Keep one backup per month up to this many months
+                        in the past (default: 12)
+  --keep-yearly YEARS   Keep one backup per year up to this many years in
+                        the past (default: 5)
 ```
 
 ### Examples
@@ -159,7 +170,7 @@ cura-te-ipsum creates complete directory snapshots, but files that haven't chang
 
 ### Retention Policy
 
-Default retention (configurable in code):
+Default retention (configurable via the `--keep-*` CLI options above):
 
 - **7 days**: Keep all backups
 - **30 days**: Keep one backup per day
@@ -232,13 +243,14 @@ backups/
   backend's hardlinker cannot carry forward into the next backup. Pick
   one of `--external-rsync`/`--external-hardlink` or the Python
   defaults and use it consistently for a given backup destination.
-- **`--dry-run` behaves differently per backend, though neither leaves
-  a lasting change.** With `--external-rsync`, rsync itself avoids
-  writing to the destination (it still reads and stats files to
-  compute what would change). With the Python backend, files are still
-  fully copied into a throwaway staging directory, which is then
-  deleted - correct, but slower and more I/O-heavy than the external
-  backend's dry run.
+- **`--dry-run` never writes anything, with either backend.** Neither
+  backend creates a staging directory, hardlink, lock, or any other
+  file or metadata update - each source is compared directly against
+  the latest completed snapshot (never a copy of it), and the proposed
+  create/rewrite/delete/exclude operations are logged. `--external-rsync`
+  runs real rsync with its own `--dry-run` flag (it still reads and
+  stats files to compute what would change); the Python backend performs
+  the same read-only comparison itself.
 
 ## Development
 

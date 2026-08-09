@@ -72,6 +72,40 @@ def _build_parser():
                                default=False,
                                help="Use cp command for creating hardlink "
                                     "copies")
+    backup_parser.add_argument("--keep-all",
+                               type=int,
+                               default=7,
+                               metavar="DAYS",
+                               help="keep every backup up to this many days "
+                                    "in the past (default: %(default)s)")
+    backup_parser.add_argument("--keep-daily",
+                               type=int,
+                               default=30,
+                               metavar="DAYS",
+                               help="keep one backup per day up to this "
+                                    "many days in the past "
+                                    "(default: %(default)s)")
+    backup_parser.add_argument("--keep-weekly",
+                               type=int,
+                               default=52,
+                               metavar="WEEKS",
+                               help="keep one backup per week up to this "
+                                    "many weeks in the past "
+                                    "(default: %(default)s)")
+    backup_parser.add_argument("--keep-monthly",
+                               type=int,
+                               default=12,
+                               metavar="MONTHS",
+                               help="keep one backup per month up to this "
+                                    "many months in the past "
+                                    "(default: %(default)s)")
+    backup_parser.add_argument("--keep-yearly",
+                               type=int,
+                               default=5,
+                               metavar="YEARS",
+                               help="keep one backup per year up to this "
+                                    "many years in the past "
+                                    "(default: %(default)s)")
     backup_parser.add_argument("sources",
                                nargs="+",
                                metavar="SOURCE",
@@ -143,7 +177,11 @@ def _run_backup(args) -> int:
 
     start_time = time.time()
 
-    if not backup.set_backups_lock(backups_dir_abs, args.force):
+    # A dry-run never writes anything, including lock metadata, so it
+    # doesn't need to acquire the lock at all - only a real run has to
+    # serialize against other backups/restores.
+    if not args.dry_run and not backup.set_backups_lock(
+            backups_dir_abs, args.force):
         return 1
 
     exit_code = 0
@@ -160,13 +198,21 @@ def _run_backup(args) -> int:
             external_rsync=args.external_rsync,
             external_hardlink=args.external_hardlink,
         )
-        backup.cleanup_old_backups(backups_dir=backups_dir_abs,
-                                   dry_run=args.dry_run)
+        backup.cleanup_old_backups(
+            backups_dir=backups_dir_abs,
+            dry_run=args.dry_run,
+            keep_all=args.keep_all,
+            keep_daily=args.keep_daily,
+            keep_weekly=args.keep_weekly,
+            keep_monthly=args.keep_monthly,
+            keep_yearly=args.keep_yearly,
+        )
     except backup.BackupFailedError as err:
         _lg.error("Backup failed: %s", err)
         exit_code = 1
     finally:
-        backup.release_backups_lock(backups_dir_abs)
+        if not args.dry_run:
+            backup.release_backups_lock(backups_dir_abs)
 
     end_time = time.time()
     spent_time = end_time - start_time
@@ -189,7 +235,11 @@ def _run_restore(args) -> int:
     # while it's still in progress. set_backups_lock() already logs why
     # (e.g. "Previous backup is still in progress") - add restore-specific
     # context here so a restore failure doesn't read like a backup one.
-    if not backup.set_backups_lock(backups_dir_abs, args.force):
+    # A dry-run never writes to dest_dir, so it doesn't need this
+    # protection - nothing it reads can be invalidated by a concurrent
+    # writer in a way that produces anything worse than a stale preview.
+    if not args.dry_run and not backup.set_backups_lock(
+            backups_dir_abs, args.force):
         _lg.error("Could not acquire the backups lock, restore aborted "
                  "(use --force to wait for it instead)")
         return 1

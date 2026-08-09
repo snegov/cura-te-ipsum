@@ -637,13 +637,19 @@ def cleanup_old_backups(backups_dir: str,
         )
 
     backups_dir_abs = _canonical(backups_dir)
-    repo_id = _ensure_repo_id(backups_dir)
 
+    if dry_run:
+        # _ensure_repo_id() would create the repo-id file on first use -
+        # a mutation dry-run must never perform - and it isn't needed
+        # for anything below, since nothing is actually deleted here.
+        for backup in all_backups:
+            if backup not in keep:
+                _lg.info("Would remove old backup %s", backup.name)
+        return
+
+    repo_id = _ensure_repo_id(backups_dir)
     for backup in all_backups:
         if backup in keep:
-            continue
-        if dry_run:
-            _lg.info("Would remove old backup %s", backup.name)
             continue
         _quarantine_and_delete(backup, backups_dir_abs, repo_id)
 
@@ -750,6 +756,50 @@ def process_backed_entry(backup_dir: str,
                          dst_dir=os.path.join(backup_dir, DELTA_DIR))
 
 
+def _plan_backup(sources, backups_dir: str,
+                 latest_backup: Optional[os.DirEntry],
+                 rsync_func) -> None:
+    """
+    Print the operations a real run would perform, without creating,
+    deleting, or modifying anything: no staging directory, no lock,
+    no hardlinks, no metadata updates. Each source is diffed directly
+    against its counterpart in the latest completed snapshot (or
+    reported as entirely new, if there is no latest snapshot, or this
+    source wasn't part of it) - never against a throwaway copy.
+    """
+    # A placeholder path that is guaranteed not to exist, used as the
+    # comparison target for a source with nothing to diff against yet.
+    # rsync_func(..., dry_run=True) treats a missing dst as "everything
+    # in src is new" and never creates it.
+    no_prior_copy = os.path.join(
+        backups_dir, "%sdry-run-%s" % (STAGING_PREFIX, uuid.uuid4().hex)
+    )
+
+    for src in sources:
+        src_abs = os.path.abspath(src)
+        src_name = os.path.basename(src_abs)
+        if latest_backup is not None:
+            dst_abs = os.path.join(latest_backup.path, src_name)
+        else:
+            dst_abs = os.path.join(no_prior_copy, src_name)
+
+        _lg.info("Dry-run: comparing %s against %s", src_abs, dst_abs)
+        for entry_relpath, action, msg in rsync_func(
+                src_abs, dst_abs, dry_run=True
+        ):
+            full_relpath = os.path.join(src_name, entry_relpath)
+            if action == fs.Actions.ERROR:
+                _lg.error("Would fail to back up %s: %s",
+                          full_relpath, msg)
+                continue
+            if action == fs.Actions.EXCLUDE:
+                _lg.info("Would exclude %s (%s)", full_relpath, msg)
+                continue
+            if action == fs.Actions.NOTHING:
+                continue
+            _lg.info("Would %s: %s", action.name.lower(), full_relpath)
+
+
 def initiate_backup(sources,
                     backups_dir: str,
                     dry_run: bool = False,
@@ -765,6 +815,10 @@ def initiate_backup(sources,
     never be mistaken for a successful one. On success, the staging
     directory is fsync'd and atomically renamed into its final snapshot
     name.
+
+    With dry_run=True, this only plans and prints proposed operations -
+    see _plan_backup(). No staging directory, hardlink, or file is ever
+    created, and no existing file is touched.
     :param sources: list of directories to backup (relative paths ok)
     :param backups_dir: directory where all backups are stored
     :param dry_run: if True, no actual changes will be made
@@ -774,6 +828,11 @@ def initiate_backup(sources,
         snapshot was created (dry-run or no changes since last backup).
     :raises BackupFailedError: if the backup could not be completed.
     """
+    if dry_run:
+        _plan_backup(sources, backups_dir, _get_latest_backup(backups_dir),
+                    fs.rsync_ext if external_rsync else fs.rsync)
+        return None
+
     cleanup_stale_staging_dirs(backups_dir)
 
     snapshot_name = _reserve_snapshot_name(backups_dir)
@@ -840,9 +899,7 @@ def initiate_backup(sources,
             dst_abs = os.path.join(staging.path, src_name)
             _lg.info("Backing up directory %s to staging for %s",
                      src_abs, snapshot_name)
-            for entry_relpath, action, msg in rsync_func(
-                    src_abs, dst_abs, dry_run=dry_run
-            ):
+            for entry_relpath, action, msg in rsync_func(src_abs, dst_abs):
                 if action == fs.Actions.ERROR:
                     raise BackupFailedError(
                         "Failed to copy %s: %s" % (entry_relpath, msg)
@@ -889,11 +946,6 @@ def initiate_backup(sources,
         shutil.rmtree(staging.path, ignore_errors=True)
         raise
 
-    # do not create backup on dry-run
-    if dry_run:
-        _lg.info("Dry-run, removing staging directory: %s", snapshot_name)
-        shutil.rmtree(staging.path, ignore_errors=True)
-        return None
     # do not create backup if no change from previous one - but a change
     # in *which* entries are excluded is itself a change worth keeping,
     # or the new exclusions would never make it into a written manifest.
