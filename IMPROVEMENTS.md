@@ -147,11 +147,11 @@ Acceptance criteria:
 
 ### Make dry-run genuinely non-mutating
 
-- [ ] Separate operation planning from execution.
-- [ ] Ensure dry-run creates no files, hardlinks, locks, metadata updates, or
+- [x] Separate operation planning from execution.
+- [x] Ensure dry-run creates no files, hardlinks, locks, metadata updates, or
   temporary snapshots.
-- [ ] Print proposed copy, exclusion, and deletion operations.
-- [ ] Expose validated retention policy through CLI options or configuration.
+- [x] Print proposed copy, exclusion, and deletion operations.
+- [x] Expose validated retention policy through CLI options or configuration.
 
 ### Strengthen tests and CI
 

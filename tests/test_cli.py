@@ -117,6 +117,32 @@ class TestArgumentParsing:
         assert m_cleanup.call_args.kwargs['dry_run'] is True
         assert m_init.call_args.kwargs['dry_run'] is True
 
+    def test_dry_run_does_not_acquire_lock(self, tmp_path):
+        """
+        A dry-run must not take the backups lock at all - set_backups_lock()
+        writes PID/timestamp metadata to the lock file, which is itself a
+        mutation a dry-run must never make.
+        """
+        backups_dir = tmp_path / "backups"
+        backups_dir.mkdir()
+        source = tmp_path / "src"
+        source.mkdir()
+
+        with mock.patch('sys.argv', ['cura-te-ipsum', '-b',
+                                      str(backups_dir), str(source),
+                                      '--dry-run']):
+            with mock.patch('curateipsum.backup.set_backups_lock') \
+                    as m_lock:
+                with mock.patch('curateipsum.backup.cleanup_old_backups'):
+                    with mock.patch('curateipsum.backup.initiate_backup'):
+                        with mock.patch(
+                                'curateipsum.backup.release_backups_lock') \
+                                as m_release:
+                            cli.main()
+
+        m_lock.assert_not_called()
+        m_release.assert_not_called()
+
     def test_force_flag_passed_to_lock(self, tmp_path):
         """Should pass force=True to set_backups_lock when --force is set."""
         backups_dir = tmp_path / "backups"
@@ -654,6 +680,31 @@ class TestRestoreSubcommand:
 
         assert result == 0
         assert not dest.exists()
+
+    def test_restore_dry_run_does_not_acquire_lock(self, tmp_path):
+        """
+        Mirrors TestMain.test_dry_run_does_not_acquire_lock for restore:
+        restore --dry-run must not touch the lock either.
+        """
+        backups_dir = tmp_path / "backups"
+        backups_dir.mkdir()
+        source = tmp_path / "src"
+        source.mkdir()
+        self._make_backup(backups_dir, source)
+
+        dest = tmp_path / "dest"
+        with mock.patch('sys.argv', ['cura-te-ipsum', 'restore', '-b',
+                                      str(backups_dir), '-n', str(dest)]):
+            with mock.patch('curateipsum.backup.set_backups_lock') \
+                    as m_lock:
+                with mock.patch(
+                        'curateipsum.backup.release_backups_lock') \
+                        as m_release:
+                    result = cli.main()
+
+        assert result == 0
+        m_lock.assert_not_called()
+        m_release.assert_not_called()
 
     def test_restore_verify_passes_after_clean_restore(self, tmp_path):
         backups_dir = tmp_path / "backups"

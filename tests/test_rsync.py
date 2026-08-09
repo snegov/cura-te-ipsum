@@ -358,6 +358,89 @@ class TestRsyncBasic:
         assert dst_stat.st_mode == src_stat.st_mode
 
 
+class TestRsyncDryRun:
+    """
+    fs.rsync(dry_run=True) must yield the same actions a real run would,
+    while never creating, deleting, or modifying anything - including
+    dst_dir itself when it doesn't already exist.
+    """
+
+    @pytest.fixture
+    def rsync_dirs(self, tmp_path):
+        src_dir = os.path.join(str(tmp_path), "source")
+        dst_dir = os.path.join(str(tmp_path), "dest")
+        os.mkdir(src_dir)
+        return src_dir, dst_dir
+
+    def test_dry_run_does_not_create_missing_destination(self, rsync_dirs):
+        src_dir, dst_dir = rsync_dirs
+        with open(os.path.join(src_dir, "file.txt"), "w") as f:
+            f.write("content")
+
+        actions = list(fs.rsync(src_dir, dst_dir, dry_run=True))
+
+        assert not os.path.exists(dst_dir)
+        assert [a[1] for a in actions] == [fs.Actions.CREATE]
+
+    def test_dry_run_does_not_copy_new_files(self, rsync_dirs):
+        src_dir, dst_dir = rsync_dirs
+        os.mkdir(dst_dir)
+        with open(os.path.join(src_dir, "file.txt"), "w") as f:
+            f.write("content")
+
+        actions = list(fs.rsync(src_dir, dst_dir, dry_run=True))
+
+        assert not os.path.exists(os.path.join(dst_dir, "file.txt"))
+        assert [a[1] for a in actions] == [fs.Actions.CREATE]
+
+    def test_dry_run_does_not_delete_stale_files(self, rsync_dirs):
+        src_dir, dst_dir = rsync_dirs
+        os.mkdir(dst_dir)
+        stale = os.path.join(dst_dir, "stale.txt")
+        with open(stale, "w") as f:
+            f.write("stale")
+
+        actions = list(fs.rsync(src_dir, dst_dir, dry_run=True))
+
+        assert os.path.exists(stale)
+        assert [a[1] for a in actions] == [fs.Actions.DELETE]
+
+    def test_dry_run_does_not_rewrite_changed_files(self, rsync_dirs):
+        src_dir, dst_dir = rsync_dirs
+        os.mkdir(dst_dir)
+        src_file = os.path.join(src_dir, "file.txt")
+        dst_file = os.path.join(dst_dir, "file.txt")
+        with open(src_file, "w") as f:
+            f.write("updated content")
+        with open(dst_file, "w") as f:
+            f.write("modified")
+
+        actions = list(fs.rsync(src_dir, dst_dir, dry_run=True))
+
+        with open(dst_file, "r") as f:
+            assert f.read() == "modified"
+        assert [a[1] for a in actions] == [fs.Actions.REWRITE]
+
+    def test_dry_run_does_not_change_permissions(self, rsync_dirs):
+        src_dir, dst_dir = rsync_dirs
+        os.mkdir(dst_dir)
+        src_file = os.path.join(src_dir, "script.sh")
+        dst_file = os.path.join(dst_dir, "script.sh")
+        with open(src_file, "w") as f:
+            f.write("content")
+        with open(dst_file, "w") as f:
+            f.write("content")
+        os.utime(dst_file, ns=(os.stat(src_file).st_atime_ns,
+                               os.stat(src_file).st_mtime_ns))
+        os.chmod(src_file, 0o755)
+        os.chmod(dst_file, 0o644)
+
+        actions = list(fs.rsync(src_dir, dst_dir, dry_run=True))
+
+        assert os.stat(dst_file).st_mode & 0o777 == 0o644
+        assert [a[1] for a in actions] == [fs.Actions.UPDATE_PERM]
+
+
 class TestParseRsyncOutput:
     """Test _parse_rsync_output() parsing of rsync --itemize-changes."""
 

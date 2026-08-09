@@ -439,6 +439,18 @@ def update_direntry(src_entry: os.DirEntry,
     return copy_direntry(src_entry, dst_entry.path)
 
 
+def _maybe_update(src_entry: os.DirEntry, dst_entry: os.DirEntry,
+                  dry_run: bool) -> Optional[str]:
+    """
+    update_direntry(), unless dry_run - in which case dst_entry is left
+    untouched and no digest is available (nothing was actually copied to
+    hash).
+    """
+    if dry_run:
+        return None
+    return update_direntry(src_entry, dst_entry)
+
+
 def rsync(src_dir,
           dst_dir,
           dry_run=False) -> Iterable[Tuple[str, Actions, str]]:
@@ -447,6 +459,14 @@ def rsync(src_dir,
     Yield (path, action, error message) tuples.
     Entries in dst_dir will be removed if not present in src_dir.
     Analog of 'rsync --delete -irltpog'.
+
+    With dry_run=True, dst_dir is never created, written to, or mutated
+    in any way (no copy, delete, chmod, chown, or utime call runs) - the
+    same comparison logic that decides each action still runs, so the
+    yielded (path, action, message) tuples describe exactly what a real
+    run would do, but purely by reading src_dir and dst_dir. This lets a
+    dry run diff straight against the previous, immutable snapshot
+    instead of a throwaway hardlinked copy.
     """
 
     _lg.debug("Rsync: %s -> %s", src_dir, dst_dir)
@@ -457,13 +477,18 @@ def rsync(src_dir,
         raise BackupCreationError(
             "Error during reading source directory: %s" % src_root_abs
         )
-    if os.path.exists(dst_root_abs):
-        if not os.path.isdir(dst_root_abs):
-            raise BackupCreationError(
-                "Destination path is not a directory: %s" % dst_root_abs
-            )
-    else:
-        os.mkdir(dst_root_abs)
+    dst_exists = os.path.exists(dst_root_abs)
+    if dst_exists and not os.path.isdir(dst_root_abs):
+        raise BackupCreationError(
+            "Destination path is not a directory: %s" % dst_root_abs
+        )
+    if not dst_exists:
+        if dry_run:
+            # Nothing to compare against and nothing to create - every
+            # source entry below is naturally reported as a CREATE.
+            dst_root_abs = None
+        else:
+            os.mkdir(dst_root_abs)
 
     # Create source map {rel_path: dir_entry}
     src_files_map = {
@@ -472,7 +497,8 @@ def rsync(src_dir,
     }
 
     # process dst tree
-    for dst_entry in scantree(dst_root_abs, dir_first=False):
+    dst_iter = scantree(dst_root_abs, dir_first=False) if dst_root_abs else ()
+    for dst_entry in dst_iter:
         rel_path = dst_entry.path[len(dst_root_abs) + 1:]
 
         src_entry = src_files_map.get(rel_path)
@@ -480,6 +506,9 @@ def rsync(src_dir,
         # remove dst entries not existing in source
         if src_entry is None:
             _lg.debug("Rsync, deleting: %s", rel_path)
+            if dry_run:
+                yield rel_path, Actions.DELETE, ""
+                continue
             try:
                 rm_direntry(dst_entry)
                 yield rel_path, Actions.DELETE, ""
@@ -513,7 +542,7 @@ def rsync(src_dir,
                           " (src is a file, dst is not a file): %s",
                           rel_path)
                 try:
-                    digest = update_direntry(src_entry, dst_entry)
+                    digest = _maybe_update(src_entry, dst_entry, dry_run)
                     yield rel_path, Actions.REWRITE, digest or ""
                 except (OSError, BackupCreationError) as exc:
                     yield rel_path, Actions.ERROR, str(exc)
@@ -525,7 +554,7 @@ def rsync(src_dir,
                           " (src is a dir, dst is not a dir): %s",
                           rel_path)
                 try:
-                    update_direntry(src_entry, dst_entry)
+                    _maybe_update(src_entry, dst_entry, dry_run)
                     yield rel_path, Actions.REWRITE, ""
                 except (OSError, BackupCreationError) as exc:
                     yield rel_path, Actions.ERROR, str(exc)
@@ -537,7 +566,7 @@ def rsync(src_dir,
                           " (src is a symlink, dst is not a symlink): %s",
                           rel_path)
                 try:
-                    update_direntry(src_entry, dst_entry)
+                    _maybe_update(src_entry, dst_entry, dry_run)
                     yield rel_path, Actions.REWRITE, ""
                 except (OSError, BackupCreationError) as exc:
                     yield rel_path, Actions.ERROR, str(exc)
@@ -547,7 +576,7 @@ def rsync(src_dir,
         if src_entry.inode() == dst_entry.inode():
             _lg.debug("Rsync, rewriting (shared inode with src): %s", rel_path)
             try:
-                digest = update_direntry(src_entry, dst_entry)
+                digest = _maybe_update(src_entry, dst_entry, dry_run)
                 yield rel_path, Actions.REWRITE, digest or ""
             except (OSError, BackupCreationError) as exc:
                 yield rel_path, Actions.ERROR, str(exc)
@@ -565,7 +594,7 @@ def rsync(src_dir,
                 _lg.debug("Rsync, rewriting (different %s): %s",
                           reason, rel_path)
                 try:
-                    digest = update_direntry(src_entry, dst_entry)
+                    digest = _maybe_update(src_entry, dst_entry, dry_run)
                     yield rel_path, Actions.REWRITE, digest or ""
                 except (OSError, BackupCreationError) as exc:
                     yield rel_path, Actions.ERROR, str(exc)
@@ -577,7 +606,7 @@ def rsync(src_dir,
                 _lg.debug("Rsync, rewriting (different symlink target): %s",
                           rel_path)
                 try:
-                    update_direntry(src_entry, dst_entry)
+                    _maybe_update(src_entry, dst_entry, dry_run)
                     yield rel_path, Actions.REWRITE, ""
                 except (OSError, BackupCreationError) as exc:
                     yield rel_path, Actions.ERROR, str(exc)
@@ -598,25 +627,30 @@ def rsync(src_dir,
         # before mutating permissions/ownership in place, or the change
         # would silently apply to every older snapshot sharing the inode.
         if src_entry.is_file(follow_symlinks=False):
-            if src_stat.st_mode != dst_stat.st_mode or (
+            if not dry_run and (src_stat.st_mode != dst_stat.st_mode or (
                     src_stat.st_uid != dst_stat.st_uid
-                    or src_stat.st_gid != dst_stat.st_gid):
+                    or src_stat.st_gid != dst_stat.st_gid)):
                 _break_shared_hardlink(dst_entry.path)
 
         # update permissions and ownership
         if src_stat.st_mode != dst_stat.st_mode:
             _lg.debug("Rsync, updating permissions: %s", rel_path)
-            os.chmod(dst_entry.path, src_stat.st_mode)
+            if not dry_run:
+                os.chmod(dst_entry.path, src_stat.st_mode)
             yield rel_path, Actions.UPDATE_PERM, ""
 
         if (src_stat.st_uid != dst_stat.st_uid
                 or src_stat.st_gid != dst_stat.st_gid):
             _lg.debug("Rsync, updating owners: %s", rel_path)
-            try:
-                os.chown(dst_entry.path, src_stat.st_uid, src_stat.st_gid)
+            if dry_run:
                 yield rel_path, Actions.UPDATE_OWNER, ""
-            except PermissionError:
-                _lg.debug("Cannot change ownership (not root): %s", rel_path)
+            else:
+                try:
+                    os.chown(dst_entry.path, src_stat.st_uid, src_stat.st_gid)
+                    yield rel_path, Actions.UPDATE_OWNER, ""
+                except PermissionError:
+                    _lg.debug("Cannot change ownership (not root): %s",
+                              rel_path)
 
     # process remained source entries (new files/dirs/symlinks)
     for rel_path, src_entry in src_files_map.items():
@@ -627,6 +661,10 @@ def rsync(src_dir,
             yield rel_path, Actions.EXCLUDE, src_kind
             continue
 
+        if dry_run:
+            yield rel_path, Actions.CREATE, ""
+            continue
+
         dst_path = os.path.join(dst_root_abs, rel_path)
         _lg.debug("Rsync, creating: %s", rel_path)
         try:
@@ -634,6 +672,11 @@ def rsync(src_dir,
             yield rel_path, Actions.CREATE, digest or ""
         except (OSError, BackupCreationError) as exc:
             yield rel_path, Actions.ERROR, str(exc)
+
+    if dry_run:
+        # Nothing below this point does anything but restore directory
+        # mtimes disturbed by the mutations above - none of which ran.
+        return
 
     # restore dir mtimes in dst, updated by updating files
     for src_entry in scantree(src_root_abs, dir_first=True,

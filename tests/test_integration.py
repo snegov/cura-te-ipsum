@@ -193,6 +193,127 @@ def test_dry_run_creates_no_backup(integration_dirs):
     assert len(backups) == 0
 
 
+def test_dry_run_leaves_backups_dir_byte_for_byte_unchanged(integration_dirs):
+    """
+    A dry-run must never create a staging directory, hardlink, lock
+    metadata, or any other trace on disk - not even a dotfile. Compare
+    every entry's full stat() (not just name/existence) before and
+    after, so an in-place mutation of an existing entry (e.g. the
+    previous snapshot getting chmod'd) can't slip past a listing-only
+    check.
+    """
+    backups_dir, source_dir = integration_dirs
+
+    (source_dir / "file.txt").write_text("original")
+    bk.initiate_backup(
+        sources=[str(source_dir)], backups_dir=str(backups_dir),
+        dry_run=False
+    )
+
+    def _snapshot_all_stats(root):
+        st = os.lstat(root)
+        result = {root: (st.st_mode, st.st_mtime_ns, st.st_ino, st.st_size)}
+        for dirpath, dirnames, filenames in os.walk(root):
+            for name in dirnames + filenames:
+                path = os.path.join(dirpath, name)
+                st = os.lstat(path)
+                result[path] = (st.st_mode, st.st_mtime_ns, st.st_ino,
+                                st.st_size)
+        return result
+
+    before = _snapshot_all_stats(str(backups_dir))
+
+    # Change the source so the dry-run has something to report
+    # (create, rewrite, and permission-change candidates all included).
+    (source_dir / "file.txt").write_text("changed")
+    (source_dir / "new.txt").write_text("new")
+
+    bk.initiate_backup(
+        sources=[str(source_dir)], backups_dir=str(backups_dir),
+        dry_run=True
+    )
+    bk.cleanup_old_backups(backups_dir=str(backups_dir), dry_run=True)
+
+    after = _snapshot_all_stats(str(backups_dir))
+    assert before == after
+
+
+def test_dry_run_cleanup_does_not_create_repo_id_file(integration_dirs):
+    """
+    cleanup_old_backups(dry_run=True) must not create the repo-id file
+    as a side effect of computing what it would delete - that file's
+    on-disk creation is itself a mutation a dry-run must never make.
+    """
+    backups_dir, source_dir = integration_dirs
+
+    (source_dir / "file.txt").write_text("content")
+    bk.initiate_backup(
+        sources=[str(source_dir)], backups_dir=str(backups_dir),
+        dry_run=False
+    )
+
+    # A real backup already creates the repo-id file (the manifest needs
+    # it); remove it to simulate a legacy repo predating that file, so a
+    # dry-run cleanup recreating it would actually be observable.
+    repo_id_path = os.path.join(str(backups_dir), bk.REPO_ID_FILE)
+    assert os.path.exists(repo_id_path)
+    os.remove(repo_id_path)
+
+    bk.cleanup_old_backups(backups_dir=str(backups_dir), dry_run=True,
+                           keep_all=0)
+
+    assert not os.path.exists(repo_id_path)
+
+
+def test_dry_run_reports_changes_against_previous_snapshot(integration_dirs):
+    """
+    A dry-run's reported operations must reflect a real diff against the
+    latest snapshot, not just "everything is new" - proving the new
+    direct-comparison path (no throwaway staging copy) actually diffs
+    against the right target.
+    """
+    backups_dir, source_dir = integration_dirs
+
+    (source_dir / "unchanged.txt").write_text("same")
+    (source_dir / "will_change.txt").write_text("before")
+    bk.initiate_backup(
+        sources=[str(source_dir)], backups_dir=str(backups_dir),
+        dry_run=False
+    )
+
+    (source_dir / "will_change.txt").write_text("after")
+    (source_dir / "brand_new.txt").write_text("new")
+
+    seen = []
+    latest_backup = bk._get_latest_backup(str(backups_dir))
+    bk._plan_backup([str(source_dir)], str(backups_dir), latest_backup,
+                    fs_rsync_recording(seen))
+
+    # fs_rsync_recording() wraps fs.rsync() directly, so recorded paths
+    # are relative to the source root itself (the source-name prefix
+    # _plan_backup() adds for logging isn't part of what rsync() yields).
+    kinds = {(relpath, action) for relpath, action in seen}
+    assert ("will_change.txt", "REWRITE") in kinds
+    assert ("brand_new.txt", "CREATE") in kinds
+    assert not any(relpath == "unchanged.txt" for relpath, _ in seen)
+
+
+def fs_rsync_recording(seen):
+    """
+    Wrap the real fs.rsync() so a test can inspect exactly which
+    (relpath, action) pairs a dry-run would report, without depending
+    on log output.
+    """
+    from curateipsum import fs
+
+    def _wrapped(src, dst, dry_run=False):
+        for relpath, action, msg in fs.rsync(src, dst, dry_run=dry_run):
+            seen.append((relpath, action.name))
+            yield relpath, action, msg
+
+    return _wrapped
+
+
 def test_no_backup_if_no_changes(integration_dirs):
     """Test that no backup is created if nothing changed"""
     backups_dir, source_dir = integration_dirs

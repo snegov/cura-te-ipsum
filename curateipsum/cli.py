@@ -29,6 +29,20 @@ def _normalize_argv(argv):
     return ["backup", *argv]
 
 
+def _nonneg_int(value: str) -> int:
+    """
+    argparse type for --keep-* options: a negative threshold shifts
+    retention comparisons into the future, which can make cleanup treat
+    every existing backup as eligible for deletion.
+    """
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(
+            "must be zero or a positive integer, got %r" % value
+        )
+    return parsed
+
+
 def _build_parser():
     parser = argparse.ArgumentParser(
         prog="cura-te-ipsum",
@@ -72,6 +86,40 @@ def _build_parser():
                                default=False,
                                help="Use cp command for creating hardlink "
                                     "copies")
+    backup_parser.add_argument("--keep-all",
+                               type=_nonneg_int,
+                               default=7,
+                               metavar="DAYS",
+                               help="keep every backup up to this many days "
+                                    "in the past (default: %(default)s)")
+    backup_parser.add_argument("--keep-daily",
+                               type=_nonneg_int,
+                               default=30,
+                               metavar="DAYS",
+                               help="keep one backup per day up to this "
+                                    "many days in the past "
+                                    "(default: %(default)s)")
+    backup_parser.add_argument("--keep-weekly",
+                               type=_nonneg_int,
+                               default=52,
+                               metavar="WEEKS",
+                               help="keep one backup per week up to this "
+                                    "many weeks in the past "
+                                    "(default: %(default)s)")
+    backup_parser.add_argument("--keep-monthly",
+                               type=_nonneg_int,
+                               default=12,
+                               metavar="MONTHS",
+                               help="keep one backup per month up to this "
+                                    "many months in the past "
+                                    "(default: %(default)s)")
+    backup_parser.add_argument("--keep-yearly",
+                               type=_nonneg_int,
+                               default=5,
+                               metavar="YEARS",
+                               help="keep one backup per year up to this "
+                                    "many years in the past "
+                                    "(default: %(default)s)")
     backup_parser.add_argument("sources",
                                nargs="+",
                                metavar="SOURCE",
@@ -143,7 +191,11 @@ def _run_backup(args) -> int:
 
     start_time = time.time()
 
-    if not backup.set_backups_lock(backups_dir_abs, args.force):
+    # A dry-run never writes anything, including lock metadata, so it
+    # doesn't need to acquire the lock at all - only a real run has to
+    # serialize against other backups/restores.
+    if not args.dry_run and not backup.set_backups_lock(
+            backups_dir_abs, args.force):
         return 1
 
     exit_code = 0
@@ -160,13 +212,21 @@ def _run_backup(args) -> int:
             external_rsync=args.external_rsync,
             external_hardlink=args.external_hardlink,
         )
-        backup.cleanup_old_backups(backups_dir=backups_dir_abs,
-                                   dry_run=args.dry_run)
+        backup.cleanup_old_backups(
+            backups_dir=backups_dir_abs,
+            dry_run=args.dry_run,
+            keep_all=args.keep_all,
+            keep_daily=args.keep_daily,
+            keep_weekly=args.keep_weekly,
+            keep_monthly=args.keep_monthly,
+            keep_yearly=args.keep_yearly,
+        )
     except backup.BackupFailedError as err:
         _lg.error("Backup failed: %s", err)
         exit_code = 1
     finally:
-        backup.release_backups_lock(backups_dir_abs)
+        if not args.dry_run:
+            backup.release_backups_lock(backups_dir_abs)
 
     end_time = time.time()
     spent_time = end_time - start_time
@@ -189,7 +249,11 @@ def _run_restore(args) -> int:
     # while it's still in progress. set_backups_lock() already logs why
     # (e.g. "Previous backup is still in progress") - add restore-specific
     # context here so a restore failure doesn't read like a backup one.
-    if not backup.set_backups_lock(backups_dir_abs, args.force):
+    # A dry-run never writes to dest_dir, so it doesn't need this
+    # protection - nothing it reads can be invalidated by a concurrent
+    # writer in a way that produces anything worse than a stale preview.
+    if not args.dry_run and not backup.set_backups_lock(
+            backups_dir_abs, args.force):
         _lg.error("Could not acquire the backups lock, restore aborted "
                  "(use --force to wait for it instead)")
         return 1
@@ -243,7 +307,8 @@ def _run_restore(args) -> int:
             else:
                 _lg.info("Verified: restored content matches the manifest")
     finally:
-        backup.release_backups_lock(backups_dir_abs)
+        if not args.dry_run:
+            backup.release_backups_lock(backups_dir_abs)
 
     return exit_code
 
